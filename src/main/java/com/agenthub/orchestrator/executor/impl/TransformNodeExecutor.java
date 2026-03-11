@@ -11,6 +11,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -20,8 +22,8 @@ import java.util.concurrent.CompletableFuture;
  * 
  * TRANSFORM node applies transformations to data using various methods:
  * - JSONPath extraction
- * - Template rendering (TODO)
- * - JQ queries (TODO)
+ * - Template rendering
+ * - Lightweight JQ subset (. , .field, .field.nested)
  * 
  * Configuration:
  * - type: "jsonpath" | "template" | "jq"
@@ -65,7 +67,9 @@ public class TransformNodeExecutor implements NodeExecutor {
             
             // Store result
             String outputKey = (String) config.getOrDefault("outputKey", "output");
-            context.setNodeResult(node.id(), Map.of(outputKey, result));
+            Map<String, Object> output = new HashMap<>();
+            output.put(outputKey, result);
+            context.setNodeResult(node.id(), output);
             
             logger.debug("TRANSFORM node {} completed with type: {}", node.id(), transformType);
             
@@ -104,32 +108,35 @@ public class TransformNodeExecutor implements NodeExecutor {
     }
     
     /**
-     * Execute template transformation (TODO)
+     * Execute template transformation.
      */
     private Object executeTemplate(PipelineNode node, ExecutionContext context, Map<String, Object> config) {
-        // TODO: Implement template rendering (Mustache/Handlebars)
         String template = (String) config.get("template");
         if (template == null) {
             throw new IllegalArgumentException("Template is required for type=template");
         }
-        
-        // For now, just return the template
-        logger.warn("Template transformation not yet implemented for node {}", node.id());
-        return template;
+
+        String rendered = renderTemplate(template, context);
+        logger.debug("Template transformation applied for node {}", node.id());
+        return rendered;
     }
-    
+
     /**
-     * Execute JQ transformation (TODO)
+     * Execute a lightweight JQ subset:
+     * - "." returns full input
+     * - ".a" returns map key a
+     * - ".a.b" returns nested map keys
      */
     private Object executeJq(PipelineNode node, ExecutionContext context, Map<String, Object> config) {
-        // TODO: Implement JQ query execution
         String query = (String) config.get("query");
         if (query == null) {
             throw new IllegalArgumentException("JQ query is required for type=jq");
         }
-        
-        logger.warn("JQ transformation not yet implemented for node {}", node.id());
-        throw new UnsupportedOperationException("JQ transformation not yet implemented");
+
+        Object input = getInput(context, config);
+        Object result = applyJqSubset(input, query);
+        logger.debug("JQ subset query '{}' applied to node {}", query, node.id());
+        return result;
     }
     
     /**
@@ -161,6 +168,72 @@ public class TransformNodeExecutor implements NodeExecutor {
         
         // Default: Use entire input
         return context.getInput();
+    }
+
+    private String renderTemplate(String template, ExecutionContext context) {
+        String rendered = template;
+
+        for (Map.Entry<String, Object> entry : context.getInput().entrySet()) {
+            rendered = rendered.replace("{{" + entry.getKey() + "}}", String.valueOf(entry.getValue()));
+            rendered = rendered.replace("{{input." + entry.getKey() + "}}", String.valueOf(entry.getValue()));
+            rendered = rendered.replace("${context.input." + entry.getKey() + "}", String.valueOf(entry.getValue()));
+        }
+
+        for (Map.Entry<String, Map<String, Object>> nodeEntry : context.getAllNodeResults().entrySet()) {
+            String nodeId = nodeEntry.getKey();
+            Map<String, Object> nodeMap = nodeEntry.getValue();
+            for (Map.Entry<String, Object> valueEntry : nodeMap.entrySet()) {
+                String key = valueEntry.getKey();
+                String value = String.valueOf(valueEntry.getValue());
+                rendered = rendered.replace("{{node." + nodeId + "." + key + "}}", value);
+                rendered = rendered.replace("${context.nodeResults." + nodeId + "." + key + "}", value);
+            }
+        }
+
+        return rendered;
+    }
+
+    private Object applyJqSubset(Object input, String query) {
+        String trimmed = query.trim();
+        if (".".equals(trimmed)) {
+            return input;
+        }
+        if (!trimmed.startsWith(".")) {
+            throw new IllegalArgumentException("Unsupported jq subset query: " + query);
+        }
+
+        String[] tokens = trimmed.substring(1).split("\\.");
+        List<String> path = new ArrayList<>();
+        for (String token : tokens) {
+            if (!token.isBlank()) {
+                path.add(token);
+            }
+        }
+
+        Object current = input;
+        for (String token : path) {
+            if (current instanceof Map<?, ?> map) {
+                current = map.get(token);
+                continue;
+            }
+            if (current instanceof List<?> list) {
+                int idx;
+                try {
+                    idx = Integer.parseInt(token);
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException("List access requires numeric token in jq subset: " + token);
+                }
+                if (idx < 0 || idx >= list.size()) {
+                    throw new IllegalArgumentException("List index out of bounds in jq subset: " + idx);
+                }
+                current = list.get(idx);
+                continue;
+            }
+
+            throw new IllegalArgumentException("Cannot navigate token '" + token + "' on non-container value");
+        }
+
+        return current;
     }
     
     @Override

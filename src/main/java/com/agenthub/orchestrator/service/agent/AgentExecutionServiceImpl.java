@@ -9,6 +9,15 @@ import com.agenthub.orchestrator.dto.AgentExecutionResult;
 import com.agenthub.orchestrator.dto.AgentExecutionStatus;
 import com.agenthub.orchestrator.dto.StartExecutionCommand;
 import com.agenthub.orchestrator.event.EventPublisher;
+import com.agenthub.orchestrator.event.domain.ExecutionCancelledEvent;
+import com.agenthub.orchestrator.event.domain.ExecutionCompletedEvent;
+import com.agenthub.orchestrator.event.domain.ExecutionFailedEvent;
+import com.agenthub.orchestrator.event.domain.ExecutionQueuedEvent;
+import com.agenthub.orchestrator.event.domain.ExecutionStartedEvent;
+import com.agenthub.orchestrator.event.domain.ExecutionTimedOutEvent;
+import com.agenthub.orchestrator.event.domain.NodeCompletedEvent;
+import com.agenthub.orchestrator.event.domain.NodeFailedEvent;
+import com.agenthub.orchestrator.event.domain.NodeStartedEvent;
 import com.agenthub.orchestrator.exception.InvalidPipelineException;
 import com.agenthub.orchestrator.executor.ExecutionContext;
 import com.agenthub.orchestrator.executor.NodeExecutionResult;
@@ -76,7 +85,7 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
 
         state.markAsQueued();
         executionStateService.saveExecution(state);
-        eventPublisher.publish("execution.queued", Map.of("executionId", state.getExecutionId().toString()));
+        eventPublisher.publish("execution.queued", new ExecutionQueuedEvent(state.getExecutionId(), state.getTenantId()));
 
         CompletableFuture.runAsync(() -> runPipeline(pipeline, state));
 
@@ -100,7 +109,7 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
         ExecutionState timedOut = executionStateService.loadExecution(executionId, command.tenantId());
         timedOut.markAsTimedOut();
         executionStateService.saveExecution(timedOut);
-        eventPublisher.publish("execution.timed_out", Map.of("executionId", executionId.toString()));
+        eventPublisher.publish("execution.timed_out", new ExecutionTimedOutEvent(executionId, command.tenantId()));
         return toResult(timedOut);
     }
 
@@ -110,7 +119,7 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
         if (state.getStatus().isCancellable()) {
             state.markAsCancelled();
             executionStateService.saveExecution(state);
-            eventPublisher.publish("execution.cancelled", Map.of("executionId", executionId.toString()));
+            eventPublisher.publish("execution.cancelled", new ExecutionCancelledEvent(executionId, tenantId));
         }
     }
 
@@ -156,7 +165,7 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
         try {
             state.markAsRunning();
             executionStateService.saveExecution(state);
-            eventPublisher.publish("execution.started", Map.of("executionId", state.getExecutionId().toString()));
+            eventPublisher.publish("execution.started", new ExecutionStartedEvent(state.getExecutionId(), state.getTenantId()));
 
             while (!nodeScheduler.isExecutionComplete(pipeline, state)) {
                 List<String> readyNodes = nodeScheduler.getReadyNodes(pipeline, state);
@@ -173,17 +182,17 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
 
             if (!state.getFailedNodes().isEmpty()) {
                 state.markAsFailed("One or more nodes failed");
-                eventPublisher.publish("execution.failed", Map.of("executionId", state.getExecutionId().toString()));
+                eventPublisher.publish("execution.failed", new ExecutionFailedEvent(state.getExecutionId(), state.getTenantId(), state.getError()));
             } else {
                 state.markAsCompleted();
-                eventPublisher.publish("execution.completed", Map.of("executionId", state.getExecutionId().toString()));
+                eventPublisher.publish("execution.completed", new ExecutionCompletedEvent(state.getExecutionId(), state.getTenantId()));
             }
 
             executionStateService.saveExecution(state);
         } catch (Exception e) {
             state.markAsFailed(e.getMessage());
             executionStateService.saveExecution(state);
-            eventPublisher.publish("execution.failed", Map.of("executionId", state.getExecutionId().toString(), "error", e.getMessage()));
+            eventPublisher.publish("execution.failed", new ExecutionFailedEvent(state.getExecutionId(), state.getTenantId(), e.getMessage()));
             log.error("Execution failed: executionId={}", state.getExecutionId(), e);
         }
     }
@@ -196,10 +205,7 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
         int attemptNumber = executionStateService.incrementNodeAttempt(state.getExecutionId(), nodeId);
 
         OffsetDateTime startedAt = OffsetDateTime.now();
-        eventPublisher.publish("node.started", Map.of(
-            "executionId", state.getExecutionId().toString(),
-            "nodeId", nodeId
-        ));
+        eventPublisher.publish("node.started", new NodeStartedEvent(state.getExecutionId(), nodeId));
 
         ExecutionContext executionContext = new ExecutionContext(
             state.getExecutionId(),
@@ -236,10 +242,7 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
                 attemptNumber
             );
             executionStateService.markNodeCompleted(state.getExecutionId(), nodeId, result);
-            eventPublisher.publish("node.completed", Map.of(
-                "executionId", state.getExecutionId().toString(),
-                "nodeId", nodeId
-            ));
+            eventPublisher.publish("node.completed", new NodeCompletedEvent(state.getExecutionId(), nodeId));
         } else {
             NodeResult result = NodeResult.failure(
                 nodeId,
@@ -249,11 +252,7 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
                 attemptNumber
             );
             executionStateService.markNodeFailed(state.getExecutionId(), nodeId, result);
-            eventPublisher.publish("node.failed", Map.of(
-                "executionId", state.getExecutionId().toString(),
-                "nodeId", nodeId,
-                "error", executionResult.error()
-            ));
+            eventPublisher.publish("node.failed", new NodeFailedEvent(state.getExecutionId(), nodeId, executionResult.error()));
         }
     }
 
