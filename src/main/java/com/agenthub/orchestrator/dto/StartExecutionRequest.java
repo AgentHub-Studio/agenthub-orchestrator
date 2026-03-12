@@ -1,5 +1,7 @@
 package com.agenthub.orchestrator.dto;
 
+import jakarta.validation.constraints.NotNull;
+
 import java.util.Map;
 import java.util.UUID;
 
@@ -9,7 +11,9 @@ import java.util.UUID;
  * @since 1.0.0
  */
 public record StartExecutionRequest(
+    @NotNull
     UUID tenantId,
+    @NotNull
     UUID agentId,
     UUID agentVersionId,
     Map<String, Object> input,
@@ -26,7 +30,7 @@ public record StartExecutionRequest(
             tenantId,
             agentId,
             agentVersionId,
-            input,
+            input != null ? input : Map.of(),
             executionMode,
             timeoutMs,
             triggeredBy

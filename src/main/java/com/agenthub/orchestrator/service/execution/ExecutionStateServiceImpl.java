@@ -11,6 +11,7 @@ import com.agenthub.orchestrator.repository.ExecutionRepository;
 import com.agenthub.orchestrator.repository.NodeExecutionRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -48,16 +49,19 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
     private final ObjectMapper objectMapper;
     private final ExecutionRepository executionRepository;
     private final NodeExecutionRepository nodeExecutionRepository;
+    private final boolean inMemoryCacheEnabled;
 
     @Autowired
     public ExecutionStateServiceImpl(
         ObjectMapper objectMapper,
         ExecutionRepository executionRepository,
-        NodeExecutionRepository nodeExecutionRepository
+        NodeExecutionRepository nodeExecutionRepository,
+        @Value("${agenthub.orchestrator.execution.in-memory-cache-enabled:true}") boolean inMemoryCacheEnabled
     ) {
         this.objectMapper = objectMapper;
         this.executionRepository = executionRepository;
         this.nodeExecutionRepository = nodeExecutionRepository;
+        this.inMemoryCacheEnabled = inMemoryCacheEnabled;
         this.executionStore = new ConcurrentHashMap<>();
     }
     
@@ -65,6 +69,7 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
         this.objectMapper = objectMapper;
         this.executionRepository = null;
         this.nodeExecutionRepository = null;
+        this.inMemoryCacheEnabled = true;
         this.executionStore = new ConcurrentHashMap<>();
     }
     
@@ -88,8 +93,9 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
             input
         );
         
-        // Store in memory
-        executionStore.put(executionId, state);
+        if (inMemoryCacheEnabled) {
+            executionStore.put(executionId, state);
+        }
         
         log.info("Execution created: executionId={}, tenantId={}, agentId={}", 
             executionId, tenantId, agentId);
@@ -101,12 +107,14 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
     public ExecutionState loadExecution(UUID executionId, UUID tenantId) {
         log.debug("Loading execution: executionId={}, tenantId={}", executionId, tenantId);
         
-        ExecutionState state = executionStore.get(executionId);
+        ExecutionState state = inMemoryCacheEnabled ? executionStore.get(executionId) : null;
         
         if (state == null) {
             state = loadFromDatabase(executionId, tenantId)
                 .orElseThrow(() -> new ExecutionNotFoundException(executionId));
-            executionStore.put(executionId, state);
+            if (inMemoryCacheEnabled) {
+                executionStore.put(executionId, state);
+            }
         }
         
         // Verify tenant ownership (multi-tenancy security)
@@ -126,8 +134,9 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
         log.debug("Saving execution: executionId={}, status={}", 
             state.getExecutionId(), state.getStatus());
         
-        // For now, just update in-memory store
-        executionStore.put(state.getExecutionId(), state);
+        if (inMemoryCacheEnabled) {
+            executionStore.put(state.getExecutionId(), state);
+        }
         
         if (executionRepository != null && nodeExecutionRepository != null) {
             persistExecution(state);
@@ -140,10 +149,7 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
     public void updateContext(UUID executionId, String key, Object value) {
         log.trace("Updating context: executionId={}, key={}", executionId, key);
         
-        ExecutionState state = executionStore.get(executionId);
-        if (state == null) {
-            throw new ExecutionNotFoundException(executionId);
-        }
+        ExecutionState state = resolveExecutionState(executionId);
         
         state.updateContext(key, value);
         saveExecution(state);
@@ -153,10 +159,7 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
     public void markNodeVisited(UUID executionId, String nodeId) {
         log.debug("Marking node visited: executionId={}, nodeId={}", executionId, nodeId);
         
-        ExecutionState state = executionStore.get(executionId);
-        if (state == null) {
-            throw new ExecutionNotFoundException(executionId);
-        }
+        ExecutionState state = resolveExecutionState(executionId);
         
         state.markNodeVisited(nodeId);
         saveExecution(state);
@@ -167,10 +170,7 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
         log.debug("Marking node completed: executionId={}, nodeId={}, latency={}ms", 
             executionId, nodeId, result.latencyMs());
         
-        ExecutionState state = executionStore.get(executionId);
-        if (state == null) {
-            throw new ExecutionNotFoundException(executionId);
-        }
+        ExecutionState state = resolveExecutionState(executionId);
         
         state.markNodeCompleted(nodeId, result);
         saveExecution(state);
@@ -184,10 +184,7 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
         log.warn("Marking node failed: executionId={}, nodeId={}, error={}", 
             executionId, nodeId, result.error());
         
-        ExecutionState state = executionStore.get(executionId);
-        if (state == null) {
-            throw new ExecutionNotFoundException(executionId);
-        }
+        ExecutionState state = resolveExecutionState(executionId);
         
         state.markNodeFailed(nodeId, result);
         saveExecution(state);
@@ -200,10 +197,7 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
     public void markNodeSkipped(UUID executionId, String nodeId) {
         log.debug("Marking node skipped: executionId={}, nodeId={}", executionId, nodeId);
         
-        ExecutionState state = executionStore.get(executionId);
-        if (state == null) {
-            throw new ExecutionNotFoundException(executionId);
-        }
+        ExecutionState state = resolveExecutionState(executionId);
         
         state.markNodeSkipped(nodeId);
         saveExecution(state);
@@ -213,10 +207,7 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
     public int incrementNodeAttempt(UUID executionId, String nodeId) {
         log.debug("Incrementing node attempt: executionId={}, nodeId={}", executionId, nodeId);
         
-        ExecutionState state = executionStore.get(executionId);
-        if (state == null) {
-            throw new ExecutionNotFoundException(executionId);
-        }
+        ExecutionState state = resolveExecutionState(executionId);
         
         state.incrementNodeAttempt(nodeId);
         int attemptNumber = state.getNodeAttemptCount(nodeId);
@@ -271,7 +262,7 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
     public void deleteExecution(UUID executionId, UUID tenantId) {
         log.debug("Deleting execution: executionId={}, tenantId={}", executionId, tenantId);
         
-        ExecutionState state = executionStore.get(executionId);
+        ExecutionState state = inMemoryCacheEnabled ? executionStore.get(executionId) : null;
         
         if (state != null) {
             // Verify tenant ownership
@@ -282,7 +273,9 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
                 );
             }
             
-            executionStore.remove(executionId);
+            if (inMemoryCacheEnabled) {
+                executionStore.remove(executionId);
+            }
             
             log.info("Execution deleted: executionId={}", executionId);
         }
@@ -385,6 +378,29 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
 
                 return state;
             });
+    }
+
+    private ExecutionState resolveExecutionState(UUID executionId) {
+        ExecutionState state = inMemoryCacheEnabled ? executionStore.get(executionId) : null;
+        if (state != null) {
+            return state;
+        }
+
+        if (executionRepository != null && nodeExecutionRepository != null) {
+            Optional<ExecutionEntity> entity = executionRepository.findById(executionId);
+            if (entity.isPresent()) {
+                UUID tenantId = entity.get().getTenantId();
+                Optional<ExecutionState> dbState = loadFromDatabase(executionId, tenantId);
+                if (dbState.isPresent()) {
+                    if (inMemoryCacheEnabled) {
+                        executionStore.put(executionId, dbState.get());
+                    }
+                    return dbState.get();
+                }
+            }
+        }
+
+        throw new ExecutionNotFoundException(executionId);
     }
 
     private void restoreExecutionStatus(ExecutionState state, String status, String errorMessage) {

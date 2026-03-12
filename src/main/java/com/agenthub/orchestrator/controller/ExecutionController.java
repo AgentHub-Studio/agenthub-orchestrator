@@ -6,6 +6,7 @@ import com.agenthub.orchestrator.dto.StartExecutionRequest;
 import com.agenthub.orchestrator.projection.ExecutionSummary;
 import com.agenthub.orchestrator.repository.ExecutionRepository;
 import com.agenthub.orchestrator.service.agent.AgentExecutionService;
+import jakarta.validation.Valid;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -37,7 +38,7 @@ public class ExecutionController {
     }
 
     @PostMapping
-    public ResponseEntity<Map<String, Object>> startExecution(@RequestBody StartExecutionRequest request) {
+    public ResponseEntity<Map<String, Object>> startExecution(@Valid @RequestBody StartExecutionRequest request) {
         StartExecutionCommand command = request.toCommand();
         UUID executionId = agentExecutionService.startExecution(command).join();
 
