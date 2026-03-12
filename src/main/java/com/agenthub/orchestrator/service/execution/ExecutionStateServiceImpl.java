@@ -146,6 +146,7 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
     }
     
     @Override
+    @Transactional
     public void updateContext(UUID executionId, String key, Object value) {
         log.trace("Updating context: executionId={}, key={}", executionId, key);
         
@@ -156,6 +157,7 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
     }
     
     @Override
+    @Transactional
     public void markNodeVisited(UUID executionId, String nodeId) {
         log.debug("Marking node visited: executionId={}, nodeId={}", executionId, nodeId);
         
@@ -166,6 +168,7 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
     }
     
     @Override
+    @Transactional
     public void markNodeCompleted(UUID executionId, String nodeId, NodeResult result) {
         log.debug("Marking node completed: executionId={}, nodeId={}, latency={}ms", 
             executionId, nodeId, result.latencyMs());
@@ -180,6 +183,7 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
     }
     
     @Override
+    @Transactional
     public void markNodeFailed(UUID executionId, String nodeId, NodeResult result) {
         log.warn("Marking node failed: executionId={}, nodeId={}, error={}", 
             executionId, nodeId, result.error());
@@ -194,6 +198,7 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
     }
     
     @Override
+    @Transactional
     public void markNodeSkipped(UUID executionId, String nodeId) {
         log.debug("Marking node skipped: executionId={}, nodeId={}", executionId, nodeId);
         
@@ -204,6 +209,7 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
     }
     
     @Override
+    @Transactional
     public int incrementNodeAttempt(UUID executionId, String nodeId) {
         log.debug("Incrementing node attempt: executionId={}, nodeId={}", executionId, nodeId);
         

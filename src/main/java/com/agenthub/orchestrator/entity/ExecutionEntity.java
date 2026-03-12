@@ -7,6 +7,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 import org.hibernate.annotations.Type;
 import io.hypersistence.utils.hibernate.type.json.JsonBinaryType;
+import org.springframework.data.domain.Persistable;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -33,11 +34,13 @@ import java.util.UUID;
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
-public class ExecutionEntity {
+public class ExecutionEntity implements Persistable<UUID> {
     
     @Id
-    @GeneratedValue(strategy = GenerationType.AUTO)
     private UUID id;
+
+    @Transient
+    private boolean isNew = true;
     
     @Column(name = "tenant_id", nullable = false)
     private UUID tenantId;
@@ -90,6 +93,17 @@ public class ExecutionEntity {
         if (status == null) {
             status = "PENDING";
         }
+    }
+
+    @PostLoad
+    @PostPersist
+    protected void markNotNew() {
+        this.isNew = false;
+    }
+
+    @Override
+    public boolean isNew() {
+        return this.isNew;
     }
     
     /**
