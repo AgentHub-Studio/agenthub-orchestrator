@@ -127,6 +127,8 @@ public class ExecutionState {
     
     public void markNodeCompleted(String nodeId, NodeResult result) {
         completedNodes.add(nodeId);
+        failedNodes.remove(nodeId);
+        skippedNodes.remove(nodeId);
         nodeResults.put(nodeId, result);
         
         // Update context.nodeResults[nodeId]
@@ -135,6 +137,8 @@ public class ExecutionState {
     
     public void markNodeFailed(String nodeId, NodeResult result) {
         failedNodes.add(nodeId);
+        completedNodes.remove(nodeId);
+        skippedNodes.remove(nodeId);
         nodeResults.put(nodeId, result);
         
         // Update context.nodeResults[nodeId]

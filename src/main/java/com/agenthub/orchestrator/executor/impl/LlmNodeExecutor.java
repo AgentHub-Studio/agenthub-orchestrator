@@ -15,6 +15,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * LLM executor that uses backend cadastros as source of truth.
@@ -23,6 +24,7 @@ import java.util.concurrent.CompletableFuture;
 public class LlmNodeExecutor implements NodeExecutor {
 
     private static final Logger logger = LoggerFactory.getLogger(LlmNodeExecutor.class);
+    private static final long DEFAULT_TIMEOUT_MS = 30000L;
 
     private final LlmConfigResolver llmConfigResolver;
     private final LlmProviderRegistry llmProviderRegistry;
@@ -44,6 +46,7 @@ public class LlmNodeExecutor implements NodeExecutor {
             String promptTemplate = (String) config.getOrDefault("prompt", "${context.input.text}");
             String prompt = renderPrompt(promptTemplate, context);
             String systemPrompt = (String) config.get("systemPrompt");
+            long timeoutMs = readTimeoutMs(config);
 
             LlmRequest request = new LlmRequest(
                 resolved.modelId(),
@@ -55,6 +58,7 @@ public class LlmNodeExecutor implements NodeExecutor {
 
             LlmProvider provider = llmProviderRegistry.get(resolved.provider());
             return provider.complete(request)
+                .orTimeout(timeoutMs, TimeUnit.MILLISECONDS)
                 .thenApply(response -> {
                     String outputKey = (String) config.getOrDefault("outputKey", "response");
                     Map<String, Object> nodeOutput = new HashMap<>();
@@ -88,6 +92,14 @@ public class LlmNodeExecutor implements NodeExecutor {
         conn.put("api_key", config.apiKey());
         conn.put("organization_id", config.organizationId());
         return conn;
+    }
+
+    private long readTimeoutMs(Map<String, Object> config) {
+        Object timeout = config.get("timeoutMs");
+        if (timeout instanceof Number number && number.longValue() > 0) {
+            return number.longValue();
+        }
+        return DEFAULT_TIMEOUT_MS;
     }
 
     private String renderPrompt(String template, ExecutionContext context) {

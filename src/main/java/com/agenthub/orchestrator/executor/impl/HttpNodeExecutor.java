@@ -13,6 +13,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import java.util.HashMap;
 import java.util.List;
@@ -31,6 +32,7 @@ import java.util.concurrent.CompletableFuture;
 public class HttpNodeExecutor implements NodeExecutor {
 
     private static final Logger logger = LoggerFactory.getLogger(HttpNodeExecutor.class);
+    public static final String NON_RETRYABLE_ERROR_PREFIX = "[NON_RETRYABLE]";
 
     private final WebClient.Builder webClientBuilder;
 
@@ -83,8 +85,18 @@ public class HttpNodeExecutor implements NodeExecutor {
             }
 
             return future.exceptionally(error -> {
-                logger.error("HTTP node failed: {}", node.id(), error);
-                return NodeExecutionResult.failed(node.id(), error);
+                Throwable rootCause = unwrap(error);
+                logger.error("HTTP node failed: {}", node.id(), rootCause);
+
+                if (rootCause instanceof WebClientResponseException responseException
+                    && responseException.getStatusCode().is4xxClientError()) {
+                    return NodeExecutionResult.failed(
+                        node.id(),
+                        NON_RETRYABLE_ERROR_PREFIX + " HTTP " + responseException.getStatusCode().value()
+                    );
+                }
+
+                return NodeExecutionResult.failed(node.id(), rootCause);
             });
         } catch (Exception e) {
             logger.error("Failed to execute HTTP node {}", node.id(), e);
@@ -159,5 +171,13 @@ public class HttpNodeExecutor implements NodeExecutor {
         }
 
         return rendered;
+    }
+
+    private Throwable unwrap(Throwable throwable) {
+        Throwable current = throwable;
+        while (current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+        }
+        return current;
     }
 }

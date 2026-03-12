@@ -1,5 +1,6 @@
 package com.agenthub.orchestrator.service.scheduler;
 
+import com.agenthub.orchestrator.executor.impl.HttpNodeExecutor;
 import com.agenthub.orchestrator.domain.execution.ExecutionState;
 import com.agenthub.orchestrator.domain.node.NodeType;
 import com.agenthub.orchestrator.domain.pipeline.PipelineDefinition;
@@ -23,8 +24,9 @@ import java.util.stream.Collectors;
  */
 @Service
 public class NodeSchedulerImpl implements NodeScheduler {
-    
+
     private static final Logger log = LoggerFactory.getLogger(NodeSchedulerImpl.class);
+    private static final int DEFAULT_MAX_RETRIES = 3;
     
     @Override
     public List<String> getReadyNodes(PipelineDefinition pipeline, ExecutionState state) {
@@ -88,7 +90,7 @@ public class NodeSchedulerImpl implements NodeScheduler {
         boolean allTerminal = reachableNodes.stream()
             .allMatch(nodeId -> 
                 state.isNodeCompleted(nodeId) || 
-                state.isNodeFailed(nodeId) || 
+                isFailedWithoutRetry(nodeId, state) ||
                 state.isNodeSkipped(nodeId)
             );
         
@@ -111,6 +113,12 @@ public class NodeSchedulerImpl implements NodeScheduler {
     public boolean canRetry(String nodeId, ExecutionState state, int maxRetries) {
         // Node must have failed
         if (!state.isNodeFailed(nodeId)) {
+            return false;
+        }
+
+        if (state.getNodeResult(nodeId)
+            .map(result -> result.error() != null && result.error().startsWith(HttpNodeExecutor.NON_RETRYABLE_ERROR_PREFIX))
+            .orElse(false)) {
             return false;
         }
         
@@ -199,6 +207,10 @@ public class NodeSchedulerImpl implements NodeScheduler {
         visited.removeAll(state.getSkippedNodes());
         
         return !visited.isEmpty();
+    }
+
+    private boolean isFailedWithoutRetry(String nodeId, ExecutionState state) {
+        return state.isNodeFailed(nodeId) && !canRetry(nodeId, state, DEFAULT_MAX_RETRIES);
     }
     
     /**
