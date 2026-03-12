@@ -24,11 +24,13 @@ import com.agenthub.orchestrator.executor.NodeExecutionResult;
 import com.agenthub.orchestrator.executor.NodeExecutor;
 import com.agenthub.orchestrator.executor.NodeExecutorRegistry;
 import com.agenthub.orchestrator.service.execution.ExecutionStateService;
+import com.agenthub.orchestrator.service.metrics.ExecutionMetrics;
 import com.agenthub.orchestrator.service.pipeline.PipelineDefinitionService;
 import com.agenthub.orchestrator.service.pipeline.ValidationResult;
 import com.agenthub.orchestrator.service.scheduler.NodeScheduler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -55,19 +57,22 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
     private final NodeScheduler nodeScheduler;
     private final NodeExecutorRegistry nodeExecutorRegistry;
     private final EventPublisher eventPublisher;
+    private final ExecutionMetrics executionMetrics;
 
     public AgentExecutionServiceImpl(
         PipelineDefinitionService pipelineDefinitionService,
         ExecutionStateService executionStateService,
         NodeScheduler nodeScheduler,
         NodeExecutorRegistry nodeExecutorRegistry,
-        EventPublisher eventPublisher
+        EventPublisher eventPublisher,
+        ExecutionMetrics executionMetrics
     ) {
         this.pipelineDefinitionService = pipelineDefinitionService;
         this.executionStateService = executionStateService;
         this.nodeScheduler = nodeScheduler;
         this.nodeExecutorRegistry = nodeExecutorRegistry;
         this.eventPublisher = eventPublisher;
+        this.executionMetrics = executionMetrics;
     }
 
     @Override
@@ -85,7 +90,7 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
 
         state.markAsQueued();
         executionStateService.saveExecution(state);
-        eventPublisher.publish("execution.queued", new ExecutionQueuedEvent(state.getExecutionId(), state.getTenantId()));
+        publishEvent("execution.queued", new ExecutionQueuedEvent(state.getExecutionId(), state.getTenantId()));
 
         CompletableFuture.runAsync(() -> runPipeline(pipeline, state));
 
@@ -109,7 +114,7 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
         ExecutionState timedOut = executionStateService.loadExecution(executionId, command.tenantId());
         timedOut.markAsTimedOut();
         executionStateService.saveExecution(timedOut);
-        eventPublisher.publish("execution.timed_out", new ExecutionTimedOutEvent(executionId, command.tenantId()));
+            publishEvent("execution.timed_out", new ExecutionTimedOutEvent(executionId, command.tenantId()));
         return toResult(timedOut);
     }
 
@@ -119,7 +124,7 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
         if (state.getStatus().isCancellable()) {
             state.markAsCancelled();
             executionStateService.saveExecution(state);
-            eventPublisher.publish("execution.cancelled", new ExecutionCancelledEvent(executionId, tenantId));
+            publishEvent("execution.cancelled", new ExecutionCancelledEvent(executionId, tenantId));
         }
     }
 
@@ -162,10 +167,13 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
     }
 
     private void runPipeline(PipelineDefinition pipeline, ExecutionState state) {
+        MDC.put("tenantId", state.getTenantId().toString());
+        MDC.put("executionId", state.getExecutionId().toString());
+        OffsetDateTime pipelineStartedAt = OffsetDateTime.now();
         try {
             state.markAsRunning();
             executionStateService.saveExecution(state);
-            eventPublisher.publish("execution.started", new ExecutionStartedEvent(state.getExecutionId(), state.getTenantId()));
+            publishEvent("execution.started", new ExecutionStartedEvent(state.getExecutionId(), state.getTenantId()));
 
             while (!nodeScheduler.isExecutionComplete(pipeline, state)) {
                 List<String> readyNodes = nodeScheduler.getReadyNodes(pipeline, state);
@@ -173,31 +181,47 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
                     break;
                 }
 
+                // Capture MDC context for propagation to async threads
+                Map<String, String> mdcContext = MDC.getCopyOfContextMap();
                 List<CompletableFuture<Void>> futures = new ArrayList<>();
                 for (String nodeId : readyNodes) {
-                    futures.add(CompletableFuture.runAsync(() -> executeNode(pipeline, state, nodeId)));
+                    futures.add(CompletableFuture.runAsync(() -> {
+                        if (mdcContext != null) {
+                            MDC.setContextMap(mdcContext);
+                        }
+                        try {
+                            executeNode(pipeline, state, nodeId);
+                        } finally {
+                            MDC.clear();
+                        }
+                    }));
                 }
                 CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
             }
 
             if (!state.getFailedNodes().isEmpty()) {
                 state.markAsFailed("One or more nodes failed");
-                eventPublisher.publish("execution.failed", new ExecutionFailedEvent(state.getExecutionId(), state.getTenantId(), state.getError()));
+                publishEvent("execution.failed", new ExecutionFailedEvent(state.getExecutionId(), state.getTenantId(), state.getError()));
             } else {
                 state.markAsCompleted();
-                eventPublisher.publish("execution.completed", new ExecutionCompletedEvent(state.getExecutionId(), state.getTenantId()));
+                publishEvent("execution.completed", new ExecutionCompletedEvent(state.getExecutionId(), state.getTenantId()));
             }
 
             executionStateService.saveExecution(state);
+            executionMetrics.recordExecution(state.getStatus(), Duration.between(pipelineStartedAt, OffsetDateTime.now()));
         } catch (Exception e) {
             state.markAsFailed(e.getMessage());
             executionStateService.saveExecution(state);
-            eventPublisher.publish("execution.failed", new ExecutionFailedEvent(state.getExecutionId(), state.getTenantId(), e.getMessage()));
+            publishEvent("execution.failed", new ExecutionFailedEvent(state.getExecutionId(), state.getTenantId(), e.getMessage()));
+            executionMetrics.recordExecution(ExecutionStatus.FAILED, Duration.between(pipelineStartedAt, OffsetDateTime.now()));
             log.error("Execution failed: executionId={}", state.getExecutionId(), e);
+        } finally {
+            MDC.clear();
         }
     }
 
     private void executeNode(PipelineDefinition pipeline, ExecutionState state, String nodeId) {
+        MDC.put("nodeId", nodeId);
         PipelineNode node = pipeline.getNodeById(nodeId)
             .orElseThrow(() -> new IllegalArgumentException("Node not found in pipeline: " + nodeId));
 
@@ -205,7 +229,7 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
         int attemptNumber = executionStateService.incrementNodeAttempt(state.getExecutionId(), nodeId);
 
         OffsetDateTime startedAt = OffsetDateTime.now();
-        eventPublisher.publish("node.started", new NodeStartedEvent(state.getExecutionId(), nodeId));
+        publishEvent("node.started", new NodeStartedEvent(state.getExecutionId(), nodeId));
 
         ExecutionContext executionContext = new ExecutionContext(
             state.getExecutionId(),
@@ -227,6 +251,7 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
         NodeExecutionResult executionResult = executor.execute(node, executionContext, node.config()).join();
         OffsetDateTime completedAt = OffsetDateTime.now();
 
+        Duration nodeDuration = Duration.between(startedAt, completedAt);
         if (executionResult.success()) {
             Object resultData = executionResult.output();
             Map<String, Object> namespacedResult = executionContext.getNodeResult(nodeId);
@@ -242,7 +267,8 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
                 attemptNumber
             );
             executionStateService.markNodeCompleted(state.getExecutionId(), nodeId, result);
-            eventPublisher.publish("node.completed", new NodeCompletedEvent(state.getExecutionId(), nodeId));
+            executionMetrics.recordNodeExecution(node.type().name(), true, nodeDuration);
+            publishEvent("node.completed", new NodeCompletedEvent(state.getExecutionId(), nodeId));
         } else {
             NodeResult result = NodeResult.failure(
                 nodeId,
@@ -252,7 +278,8 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
                 attemptNumber
             );
             executionStateService.markNodeFailed(state.getExecutionId(), nodeId, result);
-            eventPublisher.publish("node.failed", new NodeFailedEvent(state.getExecutionId(), nodeId, executionResult.error()));
+            executionMetrics.recordNodeExecution(node.type().name(), false, nodeDuration);
+            publishEvent("node.failed", new NodeFailedEvent(state.getExecutionId(), nodeId, executionResult.error()));
         }
     }
 
@@ -291,6 +318,14 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
             state.getCompletedAt(),
             latency
         );
+    }
+
+    /**
+     * Publishes an event and records the metric.
+     */
+    private void publishEvent(String eventType, Object payload) {
+        eventPublisher.publish(eventType, payload);
+        executionMetrics.recordEventPublished(eventType);
     }
 
     private void sleepQuietly(long millis) {

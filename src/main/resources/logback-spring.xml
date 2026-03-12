@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AgentHub Orchestrator - Logback Configuration
+  
+  Profile-aware logging:
+  - default/dev: Human-readable console output with colors
+  - prod: JSON structured logging for log aggregation (ELK, Loki, etc.)
+  
+  MDC fields automatically included in structured output:
+  - tenantId, executionId, correlationId, nodeId
+  
+  @since 1.0.0
+-->
+<configuration scan="true" scanPeriod="30 seconds">
+
+    <!-- Import Spring Boot defaults for base configuration -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- Properties from Spring Environment -->
+    <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="agenthub-orchestrator"/>
+
+    <!-- ============================================================
+         DEFAULT / DEV PROFILE: Human-readable console output
+         ============================================================ -->
+    <springProfile name="default | dev | test">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{40} - [%X{tenantId:-}] [%X{executionId:-}] [%X{nodeId:-}] %msg%n</pattern>
+                <charset>UTF-8</charset>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <!-- ============================================================
+         PROD PROFILE: JSON structured logging
+         ============================================================ -->
+    <springProfile name="prod">
+        <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="ch.qos.logback.classic.encoder.JsonEncoder">
+                <withFormattedMessage>true</withFormattedMessage>
+            </encoder>
+        </appender>
+
+        <appender name="FILE_JSON" class="ch.qos.logback.core.rolling.RollingFileAppender">
+            <file>/var/log/agenthub/orchestrator.log</file>
+            <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+                <fileNamePattern>/var/log/agenthub/orchestrator.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+                <maxFileSize>50MB</maxFileSize>
+                <maxHistory>30</maxHistory>
+                <totalSizeCap>1GB</totalSizeCap>
+            </rollingPolicy>
+            <encoder class="ch.qos.logback.classic.encoder.JsonEncoder">
+                <withFormattedMessage>true</withFormattedMessage>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_JSON"/>
+            <appender-ref ref="FILE_JSON"/>
+        </root>
+
+        <!-- Reduce noise from framework loggers in prod -->
+        <logger name="org.hibernate.SQL" level="WARN"/>
+        <logger name="org.hibernate.type.descriptor.sql.BasicBinder" level="WARN"/>
+        <logger name="org.springframework.web" level="WARN"/>
+    </springProfile>
+
+    <!-- ============================================================
+         Common logger levels (all profiles)
+         ============================================================ -->
+    <logger name="com.agenthub" level="DEBUG"/>
+    <logger name="org.testcontainers" level="WARN"/>
+    <logger name="com.github.dockerjava" level="WARN"/>
+    <logger name="org.apache.http" level="WARN"/>
+
+</configuration>

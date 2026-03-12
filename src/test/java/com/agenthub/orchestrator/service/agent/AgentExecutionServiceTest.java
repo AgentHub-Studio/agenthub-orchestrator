@@ -14,11 +14,13 @@ import com.agenthub.orchestrator.executor.impl.OutputNodeExecutor;
 import com.agenthub.orchestrator.executor.impl.TransformNodeExecutor;
 import com.agenthub.orchestrator.service.execution.ExecutionStateService;
 import com.agenthub.orchestrator.service.execution.ExecutionStateServiceImpl;
+import com.agenthub.orchestrator.service.metrics.ExecutionMetrics;
 import com.agenthub.orchestrator.service.pipeline.PipelineDefinitionService;
 import com.agenthub.orchestrator.service.pipeline.ValidationResult;
 import com.agenthub.orchestrator.service.scheduler.NodeScheduler;
 import com.agenthub.orchestrator.service.scheduler.NodeSchedulerImpl;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -56,7 +58,8 @@ class AgentExecutionServiceTest {
             stateService,
             scheduler,
             executorRegistry,
-            eventPublisher
+            eventPublisher,
+            new ExecutionMetrics(new SimpleMeterRegistry())
         );
 
         StartExecutionCommand command = new StartExecutionCommand(
@@ -96,7 +99,8 @@ class AgentExecutionServiceTest {
             stateService,
             scheduler,
             executorRegistry,
-            eventPublisher
+            eventPublisher,
+            new ExecutionMetrics(new SimpleMeterRegistry())
         );
 
         StartExecutionCommand command = new StartExecutionCommand(
@@ -132,7 +136,8 @@ class AgentExecutionServiceTest {
             stateService,
             scheduler,
             executorRegistry,
-            eventPublisher
+            eventPublisher,
+            new ExecutionMetrics(new SimpleMeterRegistry())
         );
 
         StartExecutionCommand command = new StartExecutionCommand(
