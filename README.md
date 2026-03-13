@@ -381,8 +381,8 @@ docker run -p 8082:8082 \
 
 ## 📖 Documentação
 
-- [Especificação de Pipelines DAG](https://github.com/AgentHub-Studio/agenthub-middleware/blob/main/docs/spec/PIPELINE_DAG.md)
-- [Arquitetura Geral](https://github.com/AgentHub-Studio/agenthub-middleware/blob/main/docs/spec/ARCHITECTURE.md)
+- [Especificação canônica de produto](https://github.com/AgentHub-Studio/agenthub-middleware/blob/main/docs/spec/AGENTS.md)
+- [Planejamento técnico (skill plan-task)](https://github.com/AgentHub-Studio/agenthub-middleware/blob/main/docs/.claude/skills/plan-task/SKILL.md)
 - [Roadmap](https://github.com/AgentHub-Studio/agenthub-middleware/blob/main/docs/SPRINTS_V2.md)
 
 ## 🤝 Contribuindo
