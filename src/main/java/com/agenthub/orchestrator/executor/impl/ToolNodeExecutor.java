@@ -96,7 +96,6 @@ public class ToolNodeExecutor implements NodeExecutor {
             // Adiciona contexto de execução
             Map<String, Object> executionContext = new HashMap<>();
             executionContext.put("tenantId", context.getTenantId());
-            executionContext.put("userId", context.getUserId());
             executionContext.put("agentId", context.getAgentId());
             executionContext.put("executionId", context.getExecutionId());
             executionContext.put("nodeId", node.id());

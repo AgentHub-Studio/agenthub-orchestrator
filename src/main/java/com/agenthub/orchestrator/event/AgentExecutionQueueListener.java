@@ -1,6 +1,7 @@
 package com.agenthub.orchestrator.event;
 
-import com.agenthub.orchestrator.service.AgentExecutionService;
+import com.agenthub.orchestrator.dto.StartExecutionCommand;
+import com.agenthub.orchestrator.service.agent.AgentExecutionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
@@ -38,20 +39,24 @@ public class AgentExecutionQueueListener {
                 event.executionId(), event.tenantId(), event.agentId(), event.priority());
         
         try {
-            // Start execution asynchronously
-            executionService.startExecution(
-                event.executionId(),
+            // Build command from event fields
+            StartExecutionCommand command = new StartExecutionCommand(
                 event.tenantId(),
                 event.agentId(),
-                event.userId(),
+                null,
                 event.inputData(),
-                event.triggerSource()
-            ).subscribe(
-                result -> log.info("Execution completed: executionId={}, status={}", 
-                        event.executionId(), result.status()),
-                error -> log.error("Execution failed: executionId={}", event.executionId(), error),
-                () -> log.debug("Execution processing finished: executionId={}", event.executionId())
+                StartExecutionCommand.ExecutionMode.ASYNC,
+                null,
+                event.userId()
             );
+
+            // Start execution asynchronously
+            executionService.startExecution(command)
+                .thenAccept(executionId -> log.info("Execution queued: executionId={}", executionId))
+                .exceptionally(error -> {
+                    log.error("Execution failed to queue: requestedExecutionId={}", event.executionId(), error);
+                    return null;
+                });
             
         } catch (Exception e) {
             log.error("Failed to process execution.requested event: executionId={}", 
