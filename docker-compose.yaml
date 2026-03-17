@@ -1,0 +1,20 @@
+services:
+  agenthub-orchestrator:
+    build: .
+    container_name: agenthub-orchestrator
+    restart: unless-stopped
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      RABBITMQ_HOST: rabbitmq.internal
+      RABBITMQ_PORT: 5672
+    networks:
+      agenthub-shared-net:
+        aliases:
+          - agenthub.orchestrator.internal
+
+networks:
+  agenthub-shared-net:
+    external: true
+    name: agenthub-shared-net
