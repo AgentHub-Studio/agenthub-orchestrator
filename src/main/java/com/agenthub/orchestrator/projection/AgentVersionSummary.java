@@ -14,8 +14,6 @@ public interface AgentVersionSummary {
 
     UUID getAgentId();
 
-    UUID getTenantId();
-
     Integer getVersion();
 
     String getStatus();

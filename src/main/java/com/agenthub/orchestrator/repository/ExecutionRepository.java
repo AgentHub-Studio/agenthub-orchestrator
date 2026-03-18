@@ -9,105 +9,72 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
-import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Repository for Execution entities
- * 
- * Follows ADR-001: Use projections for list queries (performance)
- * Follows ADR-002: Multi-tenancy mandatory (tenant_id in WHERE)
- * Follows ADR-004: Method naming conventions
- * 
+ * Repository for Execution entities.
+ *
+ * <p>Schema-based multi-tenancy is enforced by Hibernate at the connection level;
+ * no explicit {@code tenant_id} filter is needed in queries.
+ *
  * @since 1.0.0
  */
 @Repository
 public interface ExecutionRepository extends JpaRepository<ExecutionEntity, UUID> {
-    
+
     /**
-     * Find execution by ID with tenant isolation
-     * 
-     * ADR-002: Multi-tenancy mandatory
-     */
-    @Query("SELECT e FROM ExecutionEntity e WHERE e.id = :id AND e.tenantId = :tenantId")
-    Optional<ExecutionEntity> findByIdAndTenantId(
-        @Param("id") UUID id, 
-        @Param("tenantId") UUID tenantId
-    );
-    
-    /**
-     * Find execution summaries by tenant (PROJECTION for performance)
-     * 
-     * ADR-001: Use projections instead of loading full entities
-     * ADR-002: Multi-tenancy mandatory
+     * Returns all execution summaries for the current tenant schema, ordered by creation date.
      */
     @Query("""
-        SELECT e.id as id, e.tenantId as tenantId, e.agentId as agentId, 
-               e.agentVersionId as agentVersionId, e.status as status, 
-               e.triggerType as triggerType, e.startedAt as startedAt, 
+        SELECT e.id as id, e.agentId as agentId,
+               e.agentVersionId as agentVersionId, e.status as status,
+               e.triggerType as triggerType, e.startedAt as startedAt,
                e.finishedAt as finishedAt, e.createdAt as createdAt
-        FROM ExecutionEntity e 
-        WHERE e.tenantId = :tenantId 
+        FROM ExecutionEntity e
         ORDER BY e.createdAt DESC
         """)
-    Page<ExecutionSummary> findSummariesByTenantId(
-        @Param("tenantId") UUID tenantId, 
-        Pageable pageable
-    );
-    
+    Page<ExecutionSummary> findAllSummaries(Pageable pageable);
+
     /**
-     * Find execution summaries by tenant and status (PROJECTION)
-     * 
-     * ADR-001: Use projections
-     * ADR-002: Multi-tenancy mandatory
+     * Returns execution summaries filtered by status.
      */
     @Query("""
-        SELECT e.id as id, e.tenantId as tenantId, e.agentId as agentId, 
-               e.agentVersionId as agentVersionId, e.status as status, 
-               e.triggerType as triggerType, e.startedAt as startedAt, 
+        SELECT e.id as id, e.agentId as agentId,
+               e.agentVersionId as agentVersionId, e.status as status,
+               e.triggerType as triggerType, e.startedAt as startedAt,
                e.finishedAt as finishedAt, e.createdAt as createdAt
-        FROM ExecutionEntity e 
-        WHERE e.tenantId = :tenantId 
-        AND e.status = :status 
+        FROM ExecutionEntity e
+        WHERE e.status = :status
         ORDER BY e.createdAt DESC
         """)
-    Page<ExecutionSummary> findSummariesByTenantIdAndStatus(
-        @Param("tenantId") UUID tenantId,
+    Page<ExecutionSummary> findSummariesByStatus(
         @Param("status") String status,
         Pageable pageable
     );
-    
+
     /**
-     * Find execution summaries by agent (PROJECTION)
-     * 
-     * ADR-001: Use projections
-     * ADR-002: Multi-tenancy mandatory
+     * Returns execution summaries for a specific agent.
      */
     @Query("""
-        SELECT e.id as id, e.tenantId as tenantId, e.agentId as agentId, 
-               e.agentVersionId as agentVersionId, e.status as status, 
-               e.triggerType as triggerType, e.startedAt as startedAt, 
+        SELECT e.id as id, e.agentId as agentId,
+               e.agentVersionId as agentVersionId, e.status as status,
+               e.triggerType as triggerType, e.startedAt as startedAt,
                e.finishedAt as finishedAt, e.createdAt as createdAt
-        FROM ExecutionEntity e 
-        WHERE e.tenantId = :tenantId 
-        AND e.agentId = :agentId 
+        FROM ExecutionEntity e
+        WHERE e.agentId = :agentId
         ORDER BY e.createdAt DESC
         """)
-    Page<ExecutionSummary> findSummariesByTenantIdAndAgentId(
-        @Param("tenantId") UUID tenantId,
+    Page<ExecutionSummary> findSummariesByAgentId(
         @Param("agentId") UUID agentId,
         Pageable pageable
     );
-    
+
     /**
-     * Count running executions for a tenant
-     * 
-     * ADR-002: Multi-tenancy mandatory
+     * Counts executions currently in PENDING or RUNNING state.
      */
     @Query("""
-        SELECT COUNT(e) FROM ExecutionEntity e 
-        WHERE e.tenantId = :tenantId 
-        AND e.status IN ('PENDING', 'RUNNING')
+        SELECT COUNT(e) FROM ExecutionEntity e
+        WHERE e.status IN ('PENDING', 'RUNNING')
         """)
-    long countRunningExecutionsByTenantId(@Param("tenantId") UUID tenantId);
+    long countRunningExecutions();
 }

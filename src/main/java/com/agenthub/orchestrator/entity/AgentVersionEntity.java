@@ -21,7 +21,7 @@ import java.util.UUID;
  * @since 1.0.0
  */
 @Entity
-@Table(name = "agent_version", schema = "agenthub", indexes = {
+@Table(name = "agent_version", indexes = {
     @Index(name = "idx_agent_version_agent", columnList = "agent_id"),
     @Index(name = "idx_agent_version_status", columnList = "status"),
     @Index(name = "idx_agent_version_created", columnList = "created_at")
@@ -38,9 +38,6 @@ public class AgentVersionEntity {
     
     @Column(name = "agent_id", nullable = false)
     private UUID agentId;
-    
-    @Column(name = "tenant_id", nullable = false)
-    private UUID tenantId;
     
     @Column(name = "version", nullable = false)
     private Integer version;

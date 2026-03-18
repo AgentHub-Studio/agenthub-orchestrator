@@ -25,6 +25,8 @@ import com.agenthub.orchestrator.executor.NodeExecutor;
 import com.agenthub.orchestrator.executor.NodeExecutorRegistry;
 import com.agenthub.orchestrator.service.execution.ExecutionStateService;
 import com.agenthub.orchestrator.service.metrics.ExecutionMetrics;
+import com.agenthub.orchestrator.multitenant.TenantContext;
+import com.agenthub.orchestrator.multitenant.TenantContextHolder;
 import com.agenthub.orchestrator.service.pipeline.PipelineDefinitionService;
 import com.agenthub.orchestrator.service.pipeline.ValidationResult;
 import com.agenthub.orchestrator.service.scheduler.NodeScheduler;
@@ -92,7 +94,15 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
         executionStateService.saveExecution(state);
         publishEvent("execution.queued", new ExecutionQueuedEvent(state.getExecutionId(), state.getTenantId()));
 
-        CompletableFuture.runAsync(() -> runPipeline(pipeline, state));
+        TenantContext capturedContext = TenantContextHolder.getContext();
+        CompletableFuture.runAsync(() -> {
+            TenantContextHolder.setContext(capturedContext);
+            try {
+                runPipeline(pipeline, state);
+            } finally {
+                TenantContextHolder.clear();
+            }
+        });
 
         return CompletableFuture.completedFuture(state.getExecutionId());
     }
@@ -181,18 +191,21 @@ public class AgentExecutionServiceImpl implements AgentExecutionService {
                     break;
                 }
 
-                // Capture MDC context for propagation to async threads
+                // Capture MDC and tenant context for propagation to async threads
                 Map<String, String> mdcContext = MDC.getCopyOfContextMap();
+                TenantContext nodeContext = TenantContextHolder.getContext();
                 List<CompletableFuture<Void>> futures = new ArrayList<>();
                 for (String nodeId : readyNodes) {
                     futures.add(CompletableFuture.runAsync(() -> {
                         if (mdcContext != null) {
                             MDC.setContextMap(mdcContext);
                         }
+                        TenantContextHolder.setContext(nodeContext);
                         try {
                             executeNode(pipeline, state, nodeId);
                         } finally {
                             MDC.clear();
+                            TenantContextHolder.clear();
                         }
                     }));
                 }

@@ -46,7 +46,7 @@ public class PipelineDefinitionServiceImpl implements PipelineDefinitionService 
         log.debug("Loading pipeline definition: pipelineId={}, tenantId={}", pipelineId, tenantId);
 
         AgentVersionEntity agentVersion = agentVersionRepository
-            .findByIdAndTenantId(pipelineId, tenantId)
+            .findById(pipelineId)
             .orElseThrow(() -> new PipelineNotFoundException(pipelineId));
 
         PipelineDefinition pipeline = pipelineDefinitionMapper.fromJson(agentVersion.getPipelineDefinitionJson());
@@ -64,7 +64,7 @@ public class PipelineDefinitionServiceImpl implements PipelineDefinitionService 
         log.debug("Loading active pipeline for agent: agentId={}, tenantId={}", agentId, tenantId);
 
         AgentVersionEntity activeVersion = agentVersionRepository
-            .findLatestPublishedByAgentIdAndTenantId(agentId, tenantId)
+            .findLatestPublishedByAgentId(agentId)
             .orElseThrow(() -> new PipelineNotFoundException(agentId, "No active published version found"));
 
         return loadPipelineDefinition(activeVersion.getId(), tenantId);

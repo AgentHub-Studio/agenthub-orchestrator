@@ -21,7 +21,7 @@ import java.util.UUID;
  * @since 1.0.0
  */
 @Entity
-@Table(name = "agent_execution_node", schema = "agenthub", indexes = {
+@Table(name = "agent_execution_node", indexes = {
     @Index(name = "idx_exec_node_execution", columnList = "execution_id"),
     @Index(name = "idx_exec_node_pipeline", columnList = "pipeline_node_id"),
     @Index(name = "idx_exec_node_status", columnList = "status"),

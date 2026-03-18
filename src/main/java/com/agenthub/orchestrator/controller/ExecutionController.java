@@ -146,8 +146,8 @@ public class ExecutionController {
     ) {
         Pageable pageable = PageRequest.of(page, size);
         Page<ExecutionSummary> results = status == null
-            ? executionRepository.findSummariesByTenantId(tenantId, pageable)
-            : executionRepository.findSummariesByTenantIdAndStatus(tenantId, status, pageable);
+            ? executionRepository.findAllSummaries(pageable)
+            : executionRepository.findSummariesByStatus(status, pageable);
 
         return ResponseEntity.ok(results);
     }

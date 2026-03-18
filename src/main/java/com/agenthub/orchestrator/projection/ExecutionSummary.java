@@ -14,9 +14,7 @@ import java.util.UUID;
 public interface ExecutionSummary {
     
     UUID getId();
-    
-    UUID getTenantId();
-    
+
     UUID getAgentId();
     
     UUID getAgentVersionId();

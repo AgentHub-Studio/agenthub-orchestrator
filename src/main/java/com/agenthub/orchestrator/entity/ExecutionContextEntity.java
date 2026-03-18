@@ -18,7 +18,7 @@ import java.util.UUID;
  * @since 1.0.0
  */
 @Entity
-@Table(name = "execution_context", schema = "agenthub", indexes = {
+@Table(name = "execution_context", indexes = {
     @Index(name = "idx_exec_ctx_execution", columnList = "execution_id"),
     @Index(name = "idx_exec_ctx_updated", columnList = "updated_at")
 })

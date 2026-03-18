@@ -9,6 +9,8 @@ import com.agenthub.orchestrator.entity.NodeExecutionEntity;
 import com.agenthub.orchestrator.exception.ExecutionNotFoundException;
 import com.agenthub.orchestrator.repository.ExecutionRepository;
 import com.agenthub.orchestrator.repository.NodeExecutionRepository;
+import com.agenthub.orchestrator.multitenant.TenantContext;
+import com.agenthub.orchestrator.multitenant.TenantContextHolder;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -110,7 +112,7 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
         ExecutionState state = inMemoryCacheEnabled ? executionStore.get(executionId) : null;
         
         if (state == null) {
-            state = loadFromDatabase(executionId, tenantId)
+            state = loadFromDatabase(executionId)
                 .orElseThrow(() -> new ExecutionNotFoundException(executionId));
             if (inMemoryCacheEnabled) {
                 executionStore.put(executionId, state);
@@ -287,7 +289,7 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
         }
         
         if (executionRepository != null && nodeExecutionRepository != null) {
-            executionRepository.findByIdAndTenantId(executionId, tenantId)
+            executionRepository.findById(executionId)
                 .ifPresent(entity -> {
                     nodeExecutionRepository.deleteByExecution_Id(executionId);
                     executionRepository.delete(entity);
@@ -302,7 +304,6 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
             .orElseGet(ExecutionEntity::new);
 
         executionEntity.setId(state.getExecutionId());
-        executionEntity.setTenantId(state.getTenantId());
         executionEntity.setAgentId(state.getAgentId());
         executionEntity.setAgentVersionId(state.getAgentVersionId());
         executionEntity.setTriggerType(executionEntity.getTriggerType() != null ? executionEntity.getTriggerType() : "MANUAL");
@@ -340,16 +341,19 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
         }
     }
 
-    private Optional<ExecutionState> loadFromDatabase(UUID executionId, UUID tenantId) {
+    private Optional<ExecutionState> loadFromDatabase(UUID executionId) {
         if (executionRepository == null || nodeExecutionRepository == null) {
             return Optional.empty();
         }
 
-        return executionRepository.findByIdAndTenantId(executionId, tenantId)
+        TenantContext ctx = TenantContextHolder.getContext();
+        UUID tenantId = ctx != null ? UUID.fromString(ctx.getTenantId()) : null;
+
+        return executionRepository.findById(executionId)
             .map(entity -> {
                 ExecutionState state = new ExecutionState(
                     entity.getId(),
-                    entity.getTenantId(),
+                    tenantId,
                     entity.getAgentId(),
                     entity.getAgentVersionId(),
                     entity.getInputJson() != null ? entity.getInputJson() : Map.of()
@@ -393,16 +397,12 @@ public class ExecutionStateServiceImpl implements ExecutionStateService {
         }
 
         if (executionRepository != null && nodeExecutionRepository != null) {
-            Optional<ExecutionEntity> entity = executionRepository.findById(executionId);
-            if (entity.isPresent()) {
-                UUID tenantId = entity.get().getTenantId();
-                Optional<ExecutionState> dbState = loadFromDatabase(executionId, tenantId);
-                if (dbState.isPresent()) {
-                    if (inMemoryCacheEnabled) {
-                        executionStore.put(executionId, dbState.get());
-                    }
-                    return dbState.get();
+            Optional<ExecutionState> dbState = loadFromDatabase(executionId);
+            if (dbState.isPresent()) {
+                if (inMemoryCacheEnabled) {
+                    executionStore.put(executionId, dbState.get());
                 }
+                return dbState.get();
             }
         }
 

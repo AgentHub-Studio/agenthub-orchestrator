@@ -24,8 +24,7 @@ import java.util.UUID;
  * @since 1.0.0
  */
 @Entity
-@Table(name = "agent_execution", schema = "agenthub", indexes = {
-    @Index(name = "idx_execution_tenant", columnList = "tenant_id"),
+@Table(name = "agent_execution", indexes = {
     @Index(name = "idx_execution_agent", columnList = "agent_id"),
     @Index(name = "idx_execution_status", columnList = "status"),
     @Index(name = "idx_execution_started", columnList = "started_at")
@@ -41,9 +40,6 @@ public class ExecutionEntity implements Persistable<UUID> {
 
     @Transient
     private boolean isNew = true;
-    
-    @Column(name = "tenant_id", nullable = false)
-    private UUID tenantId;
     
     @Column(name = "agent_id", nullable = false)
     private UUID agentId;
