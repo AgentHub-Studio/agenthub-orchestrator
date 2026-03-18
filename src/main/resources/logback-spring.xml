@@ -1,16 +1,4 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  AgentHub Orchestrator - Logback Configuration
-  
-  Profile-aware logging:
-  - default/dev: Human-readable console output with colors
-  - prod: JSON structured logging for log aggregation (ELK, Loki, etc.)
-  
-  MDC fields automatically included in structured output:
-  - tenantId, executionId, correlationId, nodeId
-  
-  @since 1.0.0
--->
 <configuration scan="true" scanPeriod="30 seconds">
 
     <!-- Import Spring Boot defaults for base configuration -->
@@ -20,23 +8,17 @@
     <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="agenthub-orchestrator"/>
 
     <!-- ============================================================
-         DEFAULT / DEV PROFILE: Human-readable console output
+         CONSOLE appender — always active (fallback for any profile)
          ============================================================ -->
-    <springProfile name="default | dev | test">
-        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-            <encoder>
-                <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{40} - [%X{tenantId:-}] [%X{executionId:-}] [%X{nodeId:-}] %msg%n</pattern>
-                <charset>UTF-8</charset>
-            </encoder>
-        </appender>
-
-        <root level="INFO">
-            <appender-ref ref="CONSOLE"/>
-        </root>
-    </springProfile>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{40} - [%X{tenantId:-}] [%X{executionId:-}] [%X{nodeId:-}] %msg%n</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
 
     <!-- ============================================================
-         PROD PROFILE: JSON structured logging
+         PROD PROFILE: JSON structured logging (replaces CONSOLE)
          ============================================================ -->
     <springProfile name="prod">
         <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
@@ -67,6 +49,15 @@
         <logger name="org.hibernate.SQL" level="WARN"/>
         <logger name="org.hibernate.type.descriptor.sql.BasicBinder" level="WARN"/>
         <logger name="org.springframework.web" level="WARN"/>
+    </springProfile>
+
+    <!-- ============================================================
+         Default root logger (all non-prod profiles)
+         ============================================================ -->
+    <springProfile name="!prod">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
     </springProfile>
 
     <!-- ============================================================
