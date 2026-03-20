@@ -7,7 +7,7 @@
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS agent_execution (
-    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     agent_id            UUID        NOT NULL,
     agent_version_id    UUID        NOT NULL,
     trigger_type        VARCHAR(50) NOT NULL,   -- MANUAL, SCHEDULED, API, WEBHOOK
@@ -32,7 +32,7 @@ CREATE INDEX IF NOT EXISTS idx_execution_started ON agent_execution (started_at)
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS agent_execution_node (
-    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     execution_id        UUID        NOT NULL REFERENCES agent_execution (id) ON DELETE CASCADE,
     pipeline_node_id    UUID,
     parent_node_id      UUID,
@@ -59,7 +59,7 @@ CREATE INDEX IF NOT EXISTS idx_exec_node_started   ON agent_execution_node (star
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS execution_context (
-    id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     execution_id    UUID        NOT NULL REFERENCES agent_execution (id) ON DELETE CASCADE,
     context_json    JSONB       NOT NULL,
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
