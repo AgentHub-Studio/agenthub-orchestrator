@@ -1,12 +1,12 @@
 package com.agenthub.orchestrator.performance;
 
 import com.agenthub.orchestrator.OrchestratorApplication;
-import com.agenthub.orchestrator.domain.execution.ExecutionStatus;
-import com.agenthub.orchestrator.dto.AgentExecutionResult;
-import com.agenthub.orchestrator.dto.StartExecutionCommand;
-import com.agenthub.orchestrator.entity.AgentVersionEntity;
-import com.agenthub.orchestrator.repository.AgentVersionRepository;
-import com.agenthub.orchestrator.service.agent.AgentExecutionService;
+import com.agenthub.orchestrator.domain.execution.model.ExecutionStatus;
+import com.agenthub.orchestrator.adapter.in.rest.AgentExecutionResult;
+import com.agenthub.orchestrator.adapter.in.rest.StartExecutionCommand;
+import com.agenthub.orchestrator.adapter.out.persistence.AgentVersionEntity;
+import com.agenthub.orchestrator.domain.port.AgentVersionRepository;
+import com.agenthub.orchestrator.application.execution.AgentExecutionService;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterAll;

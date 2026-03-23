@@ -1,6 +1,6 @@
 package com.agenthub.orchestrator.domain.pipeline;
 
-import com.agenthub.orchestrator.domain.node.NodeType;
+import com.agenthub.orchestrator.domain.node.model.NodeType;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.Map;
