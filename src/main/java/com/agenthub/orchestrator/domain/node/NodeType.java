@@ -112,7 +112,13 @@ public enum NodeType {
     /**
      * Execute subpipeline
      */
-    SUBPIPELINE;
+    SUBPIPELINE,
+
+    // ===== Human-in-the-Loop Nodes =====
+    /**
+     * Pause pipeline and wait for human approval
+     */
+    APPROVAL;
     
     /**
      * Check if node type is a control flow node
@@ -123,8 +129,9 @@ public enum NodeType {
             || this == FOREACH 
             || this == PARALLEL_SPLIT 
             || this == MERGE 
-            || this == DELAY 
-            || this == RETRY;
+            || this == DELAY
+            || this == RETRY
+            || this == APPROVAL;
     }
     
     /**

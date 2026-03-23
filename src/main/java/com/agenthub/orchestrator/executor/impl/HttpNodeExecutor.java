@@ -5,6 +5,7 @@ import com.agenthub.orchestrator.domain.pipeline.PipelineNode;
 import com.agenthub.orchestrator.executor.ExecutionContext;
 import com.agenthub.orchestrator.executor.NodeExecutionResult;
 import com.agenthub.orchestrator.executor.NodeExecutor;
+import com.agenthub.orchestrator.service.oauth.OAuthCredentialResolver;
 import com.agenthub.orchestrator.service.pipeline.ValidationResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,9 +36,12 @@ public class HttpNodeExecutor implements NodeExecutor {
     public static final String NON_RETRYABLE_ERROR_PREFIX = "[NON_RETRYABLE]";
 
     private final WebClient.Builder webClientBuilder;
+    private final OAuthCredentialResolver oauthCredentialResolver;
 
-    public HttpNodeExecutor(WebClient.Builder webClientBuilder) {
+    public HttpNodeExecutor(WebClient.Builder webClientBuilder,
+                            OAuthCredentialResolver oauthCredentialResolver) {
         this.webClientBuilder = webClientBuilder;
+        this.oauthCredentialResolver = oauthCredentialResolver;
     }
 
     @Override
@@ -62,10 +66,25 @@ public class HttpNodeExecutor implements NodeExecutor {
             @SuppressWarnings("unchecked")
             Map<String, String> headerConfig = (Map<String, String>) config.getOrDefault("headers", Map.of());
 
+            // Resolve OAuth headers if configured
+            Map<String, String> allHeaders = new HashMap<>(headerConfig);
+            String credentialId = (String) config.get("oauthCredentialId");
+            if (credentialId != null && !credentialId.isBlank()) {
+                try {
+                    Map<String, String> authHeaders = oauthCredentialResolver
+                            .resolveHeaders(credentialId, context.getTenantId())
+                            .join();
+                    allHeaders.putAll(authHeaders);
+                } catch (Exception e) {
+                    logger.warn("Failed to resolve OAuth headers for credential {}: {}",
+                            credentialId, e.getMessage());
+                }
+            }
+
             WebClient.RequestBodySpec request = webClientBuilder.build()
                 .method(HttpMethod.valueOf(method))
                 .uri(url)
-                .headers(headers -> applyHeaders(headers, headerConfig, context));
+                .headers(headers -> applyHeaders(headers, allHeaders, context));
 
             CompletableFuture<NodeExecutionResult> future;
             if (body != null && !body.isBlank()) {

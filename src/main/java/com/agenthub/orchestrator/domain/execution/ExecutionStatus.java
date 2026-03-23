@@ -55,6 +55,11 @@ public enum ExecutionStatus {
     CANCELLED,
     
     /**
+     * Pipeline paused waiting for human approval
+     */
+    WAITING_APPROVAL,
+
+    /**
      * Execution exceeded timeout
      */
     TIMED_OUT;
@@ -73,9 +78,10 @@ public enum ExecutionStatus {
      * Check if execution is in progress (active)
      */
     public boolean isActive() {
-        return this == RUNNING 
-            || this == WAITING_TOOL 
-            || this == WAITING_CHILD_JOB;
+        return this == RUNNING
+            || this == WAITING_TOOL
+            || this == WAITING_CHILD_JOB
+            || this == WAITING_APPROVAL;
     }
     
     /**
@@ -84,11 +90,12 @@ public enum ExecutionStatus {
     public boolean isCancellable() {
         return this == PENDING 
             || this == QUEUED 
-            || this == RUNNING 
-            || this == WAITING_TOOL 
-            || this == WAITING_CHILD_JOB;
+            || this == RUNNING
+            || this == WAITING_TOOL
+            || this == WAITING_CHILD_JOB
+            || this == WAITING_APPROVAL;
     }
-    
+
     /**
      * Check if execution was successful
      */
