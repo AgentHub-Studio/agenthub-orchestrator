@@ -143,7 +143,6 @@ class ExecutionControllerTest {
         }
 
         @Override public UUID getId() { return id; }
-        @Override public UUID getTenantId() { return tenantId; }
         @Override public UUID getAgentId() { return agentId; }
         @Override public UUID getAgentVersionId() { return agentVersionId; }
         @Override public String getStatus() { return status; }
@@ -184,6 +183,12 @@ class ExecutionControllerTest {
             ExecutionRepository.class.getClassLoader(),
             new Class[]{ExecutionRepository.class},
             (proxy, method, args) -> {
+                if ("findAllSummaries".equals(method.getName())) {
+                    return page;
+                }
+                if ("findSummariesByStatus".equals(method.getName())) {
+                    return page;
+                }
                 if ("findSummariesByTenantId".equals(method.getName())) {
                     return page;
                 }

@@ -107,7 +107,6 @@ class AgentExecutionServiceIntegrationTest {
 
         AgentVersionEntity agentVersion = new AgentVersionEntity();
         agentVersion.setAgentId(agentId);
-        agentVersion.setTenantId(tenantId);
         agentVersion.setVersion(1);
         agentVersion.setStatus("PUBLISHED");
         agentVersion.setPipelineDefinitionJson(simplePipelineJson(agentId));
@@ -140,7 +139,6 @@ class AgentExecutionServiceIntegrationTest {
 
         AgentVersionEntity agentVersion = new AgentVersionEntity();
         agentVersion.setAgentId(agentId);
-        agentVersion.setTenantId(tenantId);
         agentVersion.setVersion(1);
         agentVersion.setStatus("PUBLISHED");
         agentVersion.setPipelineDefinitionJson(llmPipelineJson(agentId));
@@ -176,7 +174,6 @@ class AgentExecutionServiceIntegrationTest {
 
         AgentVersionEntity agentVersion = new AgentVersionEntity();
         agentVersion.setAgentId(agentId);
-        agentVersion.setTenantId(tenantId);
         agentVersion.setVersion(1);
         agentVersion.setStatus("PUBLISHED");
         agentVersion.setPipelineDefinitionJson(llmPipelineJson(agentId));
@@ -208,7 +205,6 @@ class AgentExecutionServiceIntegrationTest {
 
         AgentVersionEntity agentVersion = new AgentVersionEntity();
         agentVersion.setAgentId(agentId);
-        agentVersion.setTenantId(tenantId);
         agentVersion.setVersion(1);
         agentVersion.setStatus("PUBLISHED");
         agentVersion.setPipelineDefinitionJson(llmPipelineJson(agentId, 150));
@@ -238,7 +234,6 @@ class AgentExecutionServiceIntegrationTest {
 
         AgentVersionEntity agentVersion = new AgentVersionEntity();
         agentVersion.setAgentId(agentId);
-        agentVersion.setTenantId(tenantId);
         agentVersion.setVersion(1);
         agentVersion.setStatus("PUBLISHED");
         agentVersion.setPipelineDefinitionJson(httpPipelineJson(agentId));
@@ -273,7 +268,6 @@ class AgentExecutionServiceIntegrationTest {
 
         AgentVersionEntity agentVersion = new AgentVersionEntity();
         agentVersion.setAgentId(agentId);
-        agentVersion.setTenantId(tenantId);
         agentVersion.setVersion(1);
         agentVersion.setStatus("PUBLISHED");
         agentVersion.setPipelineDefinitionJson(httpRetry5xxPipelineJson(agentId));
@@ -304,7 +298,6 @@ class AgentExecutionServiceIntegrationTest {
 
         AgentVersionEntity agentVersion = new AgentVersionEntity();
         agentVersion.setAgentId(agentId);
-        agentVersion.setTenantId(tenantId);
         agentVersion.setVersion(1);
         agentVersion.setStatus("PUBLISHED");
         agentVersion.setPipelineDefinitionJson(httpNonRetryable4xxPipelineJson(agentId));
@@ -335,7 +328,6 @@ class AgentExecutionServiceIntegrationTest {
 
         AgentVersionEntity agentVersion = new AgentVersionEntity();
         agentVersion.setAgentId(agentId);
-        agentVersion.setTenantId(tenantId);
         agentVersion.setVersion(1);
         agentVersion.setStatus("PUBLISHED");
         agentVersion.setPipelineDefinitionJson(failingIntermediatePipelineJson(agentId));
@@ -371,7 +363,6 @@ class AgentExecutionServiceIntegrationTest {
 
         AgentVersionEntity agentVersion = new AgentVersionEntity();
         agentVersion.setAgentId(agentId);
-        agentVersion.setTenantId(tenantId);
         agentVersion.setVersion(1);
         agentVersion.setStatus("PUBLISHED");
         agentVersion.setPipelineDefinitionJson(parallelPipelineJson(agentId));

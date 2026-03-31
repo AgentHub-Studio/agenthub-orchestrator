@@ -318,7 +318,6 @@ class PerformanceAndStressTest {
     private AgentVersionEntity createAgentVersion(UUID tenantId, UUID agentId, Map<String, Object> pipelineJson) {
         AgentVersionEntity agentVersion = new AgentVersionEntity();
         agentVersion.setAgentId(agentId);
-        agentVersion.setTenantId(tenantId);
         agentVersion.setVersion(1);
         agentVersion.setStatus("PUBLISHED");
         agentVersion.setPipelineDefinitionJson(pipelineJson);
