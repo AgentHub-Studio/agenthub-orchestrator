@@ -1,0 +1,86 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agenthub-orchestrator
+  namespace: agenthub
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agenthub-orchestrator
+  template:
+    metadata:
+      labels:
+        app: agenthub-orchestrator
+    spec:
+      containers:
+        - name: orchestrator
+          image: localhost:5000/agenthub-orchestrator:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8082
+          env:
+            - name: SERVER_PORT
+              value: "8082"
+            - name: SPRING_PROFILES_ACTIVE
+              value: dev
+            - name: AGENTHUB_BACKEND_URL
+              value: http://agenthub-backend.agenthub.svc.cluster.local:8081
+            - name: SPRING_RABBITMQ_HOST
+              value: rabbitmq.agenthub.svc.cluster.local
+            - name: SPRING_RABBITMQ_PORT
+              value: "5672"
+            - name: SPRING_RABBITMQ_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: agenthub-secrets
+                  key: RABBITMQ_USER
+            - name: SPRING_RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agenthub-secrets
+                  key: RABBITMQ_PASSWORD
+            - name: SPRING_FLYWAY_URL
+              value: jdbc:postgresql://postgres.agenthub.svc.cluster.local:5432/agenthub
+            - name: SPRING_FLYWAY_USER
+              valueFrom:
+                secretKeyRef:
+                  name: agenthub-secrets
+                  key: POSTGRES_USER
+            - name: SPRING_FLYWAY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agenthub-secrets
+                  key: POSTGRES_PASSWORD
+            - name: SPRING_DATASOURCE_URL
+              value: jdbc:postgresql://postgres.agenthub.svc.cluster.local:5432/agenthub
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: agenthub-secrets
+                  key: POSTGRES_USER
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agenthub-secrets
+                  key: POSTGRES_PASSWORD
+          resources:
+            requests:
+              cpu: 200m
+              memory: 384Mi
+            limits:
+              cpu: 800m
+              memory: 768Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agenthub-orchestrator
+  namespace: agenthub
+spec:
+  selector:
+    app: agenthub-orchestrator
+  ports:
+    - port: 8082
+      targetPort: 8082
