@@ -72,3 +72,25 @@ func (r *ProviderRegistry) Available() []string {
 	sort.Strings(names)
 	return names
 }
+
+// GetChatModel resolves a ChatModel from an LlmPresetConfig.
+// It first tries the preset name as a key, then falls back to the provider type default.
+// Returns ErrProviderNotFound if the provider type has no registered instance.
+func (r *ProviderRegistry) GetChatModel(preset LlmPresetConfig) (ChatModel, ChatOptions, error) {
+	opts, err := preset.ToChatOptions()
+	if err != nil {
+		return nil, ChatOptions{}, err
+	}
+
+	// Try by preset name first (allows per-preset overrides).
+	if model, err := r.Get(preset.Name); err == nil {
+		return model, opts, nil
+	}
+
+	// Fall back to provider type default.
+	model, err := r.GetDefault(normaliseProviderType(preset.Provider))
+	if err != nil {
+		return nil, ChatOptions{}, fmt.Errorf("%w: %s", ErrProviderNotFound, preset.Provider)
+	}
+	return model, opts, nil
+}
