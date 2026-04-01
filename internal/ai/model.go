@@ -72,6 +72,34 @@ type Usage struct {
 	TotalTokens      int `json:"totalTokens"`
 }
 
+// Merge returns a copy of o with non-zero fields from other overwriting the originals.
+// Useful for combining per-request overrides with provider defaults.
+func (o ChatOptions) Merge(other ChatOptions) ChatOptions {
+	if other.Model != "" {
+		o.Model = other.Model
+	}
+	if other.MaxTokens != 0 {
+		o.MaxTokens = other.MaxTokens
+	}
+	if other.Temperature != 0 {
+		o.Temperature = other.Temperature
+	}
+	if other.TopP != 0 {
+		o.TopP = other.TopP
+	}
+	if len(other.Tools) > 0 {
+		o.Tools = other.Tools
+	}
+	if other.SystemMsg != "" {
+		o.SystemMsg = other.SystemMsg
+	}
+	if other.Stream {
+		o.Stream = other.Stream
+	}
+	return o
+}
+
+
 // ChatModel is the core interface for LLM providers.
 type ChatModel interface {
 	// Chat sends a chat request and returns a complete response.
