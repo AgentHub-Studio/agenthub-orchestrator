@@ -1,7 +1,6 @@
 package ai_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -9,20 +8,6 @@ import (
 
 	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/ai"
 )
-
-// stubModel is a minimal ChatModel implementation for testing the registry.
-type stubModel struct{ name string }
-
-func (s *stubModel) GetProviderName() string { return s.name }
-func (s *stubModel) Chat(_ context.Context, _ []ai.Message, _ ai.ChatOptions) (*ai.ChatResponse, error) {
-	return &ai.ChatResponse{Content: "stub"}, nil
-}
-func (s *stubModel) ChatStream(_ context.Context, _ []ai.Message, _ ai.ChatOptions) (<-chan ai.StreamChunk, error) {
-	ch := make(chan ai.StreamChunk, 1)
-	ch <- ai.StreamChunk{Delta: "stub", FinishReason: "stop"}
-	close(ch)
-	return ch, nil
-}
 
 func TestProviderRegistry_RegisterAndGet(t *testing.T) {
 	reg := ai.NewProviderRegistry()
