@@ -13,7 +13,8 @@ FROM scratch
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=builder /build/bin/orchestrator /orchestrator
+COPY --from=builder /build/migrations /migrations
 EXPOSE 8084
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD ["/orchestrator", "-health"] || exit 1
 ENTRYPOINT ["/orchestrator"]

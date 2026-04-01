@@ -1,9 +1,13 @@
 ---
+# agenthub-orchestrator — Go (replaces Java Spring MVC, porta 8082→8084)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agenthub-orchestrator
   namespace: agenthub
+  labels:
+    app: agenthub-orchestrator
+    version: go
 spec:
   replicas: 1
   selector:
@@ -13,74 +17,82 @@ spec:
     metadata:
       labels:
         app: agenthub-orchestrator
+        version: go
     spec:
       containers:
         - name: orchestrator
           image: localhost:5000/agenthub-orchestrator:latest
           imagePullPolicy: Always
           ports:
-            - containerPort: 8082
+            - name: http
+              containerPort: 8084
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: agenthub-orchestrator-config
           env:
-            - name: SERVER_PORT
-              value: "8082"
-            - name: SPRING_PROFILES_ACTIVE
-              value: dev
-            - name: AGENTHUB_BACKEND_URL
-              value: http://agenthub-backend.agenthub.svc.cluster.local:8081
-            - name: SPRING_RABBITMQ_HOST
-              value: rabbitmq.agenthub.svc.cluster.local
-            - name: SPRING_RABBITMQ_PORT
-              value: "5672"
-            - name: SPRING_RABBITMQ_USERNAME
+            - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: agenthub-secrets
-                  key: RABBITMQ_USER
-            - name: SPRING_RABBITMQ_PASSWORD
+                  key: DATABASE_URL
+            - name: RABBITMQ_URL
               valueFrom:
                 secretKeyRef:
                   name: agenthub-secrets
-                  key: RABBITMQ_PASSWORD
-            - name: SPRING_FLYWAY_URL
-              value: jdbc:postgresql://postgres.agenthub.svc.cluster.local:5432/agenthub
-            - name: SPRING_FLYWAY_USER
+                  key: RABBITMQ_URL
+            - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: agenthub-secrets
-                  key: POSTGRES_USER
-            - name: SPRING_FLYWAY_PASSWORD
+                  name: agenthub-llm-secrets
+                  key: OPENAI_API_KEY
+                  optional: true
+            - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: agenthub-secrets
-                  key: POSTGRES_PASSWORD
-            - name: SPRING_DATASOURCE_URL
-              value: jdbc:postgresql://postgres.agenthub.svc.cluster.local:5432/agenthub
-            - name: SPRING_DATASOURCE_USERNAME
+                  name: agenthub-llm-secrets
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+            - name: OPENROUTER_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: agenthub-secrets
-                  key: POSTGRES_USER
-            - name: SPRING_DATASOURCE_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: agenthub-secrets
-                  key: POSTGRES_PASSWORD
+                  name: agenthub-llm-secrets
+                  key: OPENROUTER_API_KEY
+                  optional: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8084
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8084
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            failureThreshold: 3
           resources:
             requests:
-              cpu: 200m
-              memory: 384Mi
+              cpu: 100m
+              memory: 64Mi
             limits:
-              cpu: 800m
-              memory: 768Mi
+              cpu: 500m
+              memory: 256Mi
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: agenthub-orchestrator
   namespace: agenthub
+  labels:
+    app: agenthub-orchestrator
 spec:
   selector:
     app: agenthub-orchestrator
   ports:
-    - port: 8082
-      targetPort: 8082
+    - name: http
+      port: 8084
+      targetPort: 8084
+      protocol: TCP
