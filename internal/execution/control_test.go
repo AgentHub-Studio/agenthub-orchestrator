@@ -2,6 +2,9 @@ package execution
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/google/uuid"
@@ -268,4 +271,119 @@ func TestForeachExecutor_PreservesOrder(t *testing.T) {
 		m := r.(map[string]any)
 		assert.Equal(t, i, m["index"])
 	}
+}
+
+// --- JOIN executor tests ---
+
+func TestJoinExecutor_CollectsAllSources(t *testing.T) {
+	exec := &joinExecutor{}
+	pctx := NewPipelineContext(uuid.Nil, "tenant", map[string]any{})
+	pctx.SetNodeOutput("branch1", map[string]any{"val": "a"})
+	pctx.SetNodeOutput("branch2", map[string]any{"val": "b"})
+	pctx.SetNodeOutput("branch3", map[string]any{"val": "c"})
+
+	node := &Node{ID: "j1", Type: "JOIN", Config: map[string]any{
+		"sources": []any{"branch1", "branch2", "branch3"},
+	}}
+	out, err := exec.Execute(context.Background(), node, pctx)
+	require.NoError(t, err)
+	assert.Equal(t, 3, out["count"])
+	results, ok := out["results"].([]any)
+	require.True(t, ok)
+	assert.Len(t, results, 3)
+}
+
+func TestJoinExecutor_SkipsMissingSources(t *testing.T) {
+	exec := &joinExecutor{}
+	pctx := NewPipelineContext(uuid.Nil, "tenant", map[string]any{})
+	pctx.SetNodeOutput("branch1", map[string]any{"val": "a"})
+	// branch2 not set
+
+	node := &Node{ID: "j2", Type: "JOIN", Config: map[string]any{
+		"sources": []any{"branch1", "branch2"},
+	}}
+	out, err := exec.Execute(context.Background(), node, pctx)
+	require.NoError(t, err)
+	// Only branch1 was present
+	assert.Equal(t, 1, out["count"])
+}
+
+func TestJoinExecutor_EmptySources(t *testing.T) {
+	exec := &joinExecutor{}
+	pctx := NewPipelineContext(uuid.Nil, "tenant", map[string]any{})
+
+	node := &Node{ID: "j3", Type: "JOIN", Config: map[string]any{}}
+	out, err := exec.Execute(context.Background(), node, pctx)
+	require.NoError(t, err)
+	assert.Equal(t, 0, out["count"])
+}
+
+// --- WEBHOOK_OUT executor tests ---
+
+func TestWebhookOutExecutor_MissingURL_ReturnsError(t *testing.T) {
+	exec := &webhookOutExecutor{}
+	pctx := NewPipelineContext(uuid.Nil, "tenant", map[string]any{})
+
+	node := &Node{ID: "wo1", Type: "WEBHOOK_OUT", Config: map[string]any{}}
+	_, err := exec.Execute(context.Background(), node, pctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing required config 'url'")
+}
+
+func TestWebhookOutExecutor_CallsURL(t *testing.T) {
+	// Start a local HTTP server to receive the webhook.
+	received := make(chan []byte, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	exec := &webhookOutExecutor{}
+	pctx := NewPipelineContext(uuid.Nil, "tenant", map[string]any{})
+	pctx.SetNodeOutput("prev", map[string]any{"data": "hello"})
+
+	node := &Node{ID: "wo2", Type: "WEBHOOK_OUT", Config: map[string]any{
+		"url":         ts.URL,
+		"inputNodeId": "prev",
+	}}
+	out, err := exec.Execute(context.Background(), node, pctx)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, out["status"])
+	assert.Equal(t, true, out["delivered"])
+
+	select {
+	case body := <-received:
+		assert.Contains(t, string(body), "hello")
+	default:
+		t.Fatal("webhook was not received")
+	}
+}
+
+// --- APPROVAL executor tests ---
+
+func TestApprovalExecutor_ReturnsPendingStatus(t *testing.T) {
+	exec := &approvalExecutor{}
+	pctx := NewPipelineContext(uuid.Nil, "tenant", map[string]any{})
+
+	node := &Node{ID: "ap1", Type: "APPROVAL", Config: map[string]any{
+		"message": "Please approve this step",
+	}}
+	out, err := exec.Execute(context.Background(), node, pctx)
+	require.NoError(t, err)
+	assert.Equal(t, "pending_approval", out["status"])
+	assert.Contains(t, out["approvalId"].(string), "ap1")
+	assert.Equal(t, "Please approve this step", out["message"])
+}
+
+func TestApprovalExecutor_DefaultMessage(t *testing.T) {
+	exec := &approvalExecutor{}
+	pctx := NewPipelineContext(uuid.Nil, "tenant", map[string]any{})
+
+	node := &Node{ID: "ap2", Type: "APPROVAL", Config: map[string]any{}}
+	out, err := exec.Execute(context.Background(), node, pctx)
+	require.NoError(t, err)
+	assert.NotEmpty(t, out["message"])
+	assert.Equal(t, "pending_approval", out["status"])
 }
