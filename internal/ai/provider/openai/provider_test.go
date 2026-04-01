@@ -3,8 +3,10 @@ package openai_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -66,7 +68,7 @@ func TestOpenAIProvider_Chat_APIError(t *testing.T) {
 	p := openai.New("bad-key", srv.URL)
 	_, err := p.Chat(context.Background(), []ai.Message{{Role: ai.RoleUser, Content: "Hi"}}, ai.ChatOptions{Model: "gpt-4o"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "openai")
+	assert.True(t, errors.Is(err, ai.ErrInvalidAPIKey))
 }
 
 func TestOpenAIProvider_Chat_WithSystemMessage(t *testing.T) {
@@ -129,4 +131,83 @@ func TestOpenAIProvider_ChatStream_APIError(t *testing.T) {
 	_, err := p.ChatStream(context.Background(), []ai.Message{{Role: ai.RoleUser, Content: "Hi"}},
 		ai.ChatOptions{Model: "gpt-4o"})
 	require.Error(t, err)
+}
+
+func TestOpenAIProvider_Chat_RateLimited_ReturnsTypedError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limit exceeded","type":"rate_limit_error"}}`))
+	}))
+	defer srv.Close()
+
+	p := openai.New("key", srv.URL)
+	_, err := p.Chat(context.Background(), []ai.Message{{Role: ai.RoleUser, Content: "Hi"}},
+		ai.ChatOptions{Model: "gpt-4o"})
+	require.Error(t, err)
+
+	var ae *ai.APIError
+	require.True(t, errors.As(err, &ae), "expected *ai.APIError")
+	assert.Equal(t, http.StatusTooManyRequests, ae.StatusCode)
+	assert.True(t, errors.Is(err, ai.ErrRateLimited))
+}
+
+func TestOpenAIProvider_Chat_Unauthorized_ReturnsInvalidAPIKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid api key"}}`))
+	}))
+	defer srv.Close()
+
+	p := openai.New("bad-key", srv.URL)
+	_, err := p.Chat(context.Background(), []ai.Message{{Role: ai.RoleUser, Content: "Hi"}},
+		ai.ChatOptions{Model: "gpt-4o"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ai.ErrInvalidAPIKey))
+}
+
+func TestOpenAIProvider_Chat_ServerError_ReturnsProviderUnavailable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"message":"service unavailable"}}`))
+	}))
+	defer srv.Close()
+
+	p := openai.New("key", srv.URL)
+	_, err := p.Chat(context.Background(), []ai.Message{{Role: ai.RoleUser, Content: "Hi"}},
+		ai.ChatOptions{Model: "gpt-4o"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ai.ErrProviderUnavailable))
+}
+
+func TestOpenAIProvider_Chat_RetryAfterRateLimit_EventuallySucceeds(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n < 3 {
+			// First two calls: rate limited
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"rate limit"}}`))
+			return
+		}
+		// Third call: success
+		resp := map[string]any{
+			"model": "gpt-4o",
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "ok"}, "finish_reason": "stop"},
+			},
+			"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := openai.New("key", srv.URL)
+	res, err := p.Chat(context.Background(), []ai.Message{{Role: ai.RoleUser, Content: "Hi"}},
+		ai.ChatOptions{Model: "gpt-4o"})
+	require.NoError(t, err)
+	assert.Equal(t, "ok", res.Content)
+	assert.Equal(t, int32(3), calls.Load())
 }

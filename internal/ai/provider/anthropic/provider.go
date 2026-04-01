@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -88,11 +90,11 @@ type tool struct {
 }
 
 type messagesResponse struct {
-	ID           string           `json:"id"`
-	Model        string           `json:"model"`
-	Content      []contentBlock   `json:"content"`
-	StopReason   string           `json:"stop_reason"` // end_turn, tool_use, max_tokens
-	Usage        anthropicUsage   `json:"usage"`
+	ID         string         `json:"id"`
+	Model      string         `json:"model"`
+	Content    []contentBlock `json:"content"`
+	StopReason string         `json:"stop_reason"` // end_turn, tool_use, max_tokens
+	Usage      anthropicUsage `json:"usage"`
 }
 
 type contentBlock struct {
@@ -126,7 +128,10 @@ type contentDelta struct {
 
 // ---- ChatModel implementation ----
 
+const maxRetries = 3
+
 // Chat sends messages to the Anthropic Messages endpoint and returns a complete response.
+// On HTTP 429 it retries up to maxRetries times, honouring the Retry-After header.
 func (p *Provider) Chat(ctx context.Context, messages []ai.Message, opts ai.ChatOptions) (*ai.ChatResponse, error) {
 	req, err := p.buildRequest(messages, opts, false)
 	if err != nil {
@@ -138,28 +143,51 @@ func (p *Provider) Chat(ctx context.Context, messages []ai.Message, opts ai.Chat
 		return nil, fmt.Errorf("anthropic: marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/messages", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("anthropic: create request: %w", err)
-	}
-	p.setHeaders(httpReq)
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/messages", bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("anthropic: create request: %w", err)
+		}
+		p.setHeaders(httpReq)
 
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("anthropic: do request: %w", err)
-	}
-	defer resp.Body.Close()
+		resp, err := p.client.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("anthropic: do request: %w", err)
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, p.parseError(resp)
+		if resp.StatusCode == http.StatusOK {
+			defer resp.Body.Close()
+			var msgResp messagesResponse
+			if err := json.NewDecoder(resp.Body).Decode(&msgResp); err != nil {
+				return nil, fmt.Errorf("anthropic: decode response: %w", err)
+			}
+			return p.convertResponse(&msgResp), nil
+		}
+
+		apiErr := p.parseError(resp)
+		resp.Body.Close()
+
+		if attempt < maxRetries {
+			var ae *ai.APIError
+			if errors.As(apiErr, &ae) && errors.Is(ae.Err, ai.ErrRateLimited) {
+				delay := ae.RetryAfter
+				if delay < 0 {
+					// No Retry-After header — use linear back-off.
+					delay = time.Duration(attempt+1) * time.Second
+				}
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(delay):
+				}
+				continue
+			}
+		}
+
+		return nil, apiErr
 	}
 
-	var msgResp messagesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&msgResp); err != nil {
-		return nil, fmt.Errorf("anthropic: decode response: %w", err)
-	}
-
-	return p.convertResponse(&msgResp), nil
+	return nil, fmt.Errorf("anthropic: max retries exceeded")
 }
 
 // ChatStream sends messages to the Anthropic Messages endpoint with streaming enabled.
@@ -405,9 +433,51 @@ type apiError struct {
 }
 
 func (p *Provider) parseError(resp *http.Response) error {
-	var apiErr apiError
-	if err := json.NewDecoder(resp.Body).Decode(&apiErr); err == nil && apiErr.Error.Message != "" {
-		return fmt.Errorf("anthropic: API error %d: %s", resp.StatusCode, apiErr.Error.Message)
+	var errBody apiError
+	msg := fmt.Sprintf("status %d", resp.StatusCode)
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err == nil && errBody.Error.Message != "" {
+		msg = errBody.Error.Message
 	}
-	return fmt.Errorf("anthropic: unexpected status %d", resp.StatusCode)
+
+	sentinel := p.sentinelFor(resp.StatusCode, errBody.Error.Type)
+	ae := &ai.APIError{StatusCode: resp.StatusCode, Message: msg, Err: sentinel, RetryAfter: -1}
+
+	if resp.StatusCode == http.StatusTooManyRequests {
+		ae.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+	}
+
+	return ae
+}
+
+// sentinelFor maps HTTP status codes and Anthropic error types to sentinel errors.
+func (p *Provider) sentinelFor(statusCode int, errType string) error {
+	switch statusCode {
+	case http.StatusTooManyRequests:
+		return ai.ErrRateLimited
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return ai.ErrInvalidAPIKey
+	case http.StatusBadRequest:
+		if errType == "invalid_request_error" {
+			return ai.ErrInvalidRequest
+		}
+		return ai.ErrInvalidRequest
+	}
+	if statusCode >= 500 {
+		return ai.ErrProviderUnavailable
+	}
+	return ai.ErrInvalidRequest
+}
+
+// parseRetryAfter parses the Retry-After header value (seconds as integer).
+// Returns -1 when the header is absent or unparseable, so callers can
+// distinguish "not set" from "retry immediately" (0 seconds).
+func parseRetryAfter(s string) time.Duration {
+	if s == "" {
+		return -1
+	}
+	secs, err := strconv.Atoi(s)
+	if err != nil || secs < 0 {
+		return -1
+	}
+	return time.Duration(secs) * time.Second
 }
