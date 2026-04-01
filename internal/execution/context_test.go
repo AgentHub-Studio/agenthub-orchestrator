@@ -72,3 +72,78 @@ func TestPipelineContext_InputPreserved(t *testing.T) {
 	ctx := execution.NewPipelineContext(uuid.New(), "tenant-1", input)
 	assert.Equal(t, "test", ctx.Input["prompt"])
 }
+
+// --- ResolveTemplate ---
+
+func TestResolveTemplate_SimpleField(t *testing.T) {
+	ctx := execution.NewPipelineContext(uuid.New(), "t1", nil)
+	ctx.SetNodeOutput("llm_1", map[string]any{"response": "Hello!"})
+
+	got, err := ctx.ResolveTemplate("Result: {{nodeResults.llm_1.response}}")
+	require.NoError(t, err)
+	assert.Equal(t, "Result: Hello!", got)
+}
+
+func TestResolveTemplate_NestedField(t *testing.T) {
+	ctx := execution.NewPipelineContext(uuid.New(), "t1", nil)
+	ctx.SetNodeOutput("llm_1", map[string]any{"meta": map[string]any{"tokens": 42}})
+
+	got, err := ctx.ResolveTemplate("{{nodeResults.llm_1.meta.tokens}}")
+	require.NoError(t, err)
+	assert.Equal(t, "42", got)
+}
+
+func TestResolveTemplate_InputField(t *testing.T) {
+	ctx := execution.NewPipelineContext(uuid.New(), "t1", map[string]any{"query": "hello"})
+
+	got, err := ctx.ResolveTemplate("Query: {{input.query}}")
+	require.NoError(t, err)
+	assert.Equal(t, "Query: hello", got)
+}
+
+func TestResolveTemplate_MultipleExpressions(t *testing.T) {
+	ctx := execution.NewPipelineContext(uuid.New(), "t1", map[string]any{"lang": "go"})
+	ctx.SetNodeOutput("n1", map[string]any{"val": "42"})
+
+	got, err := ctx.ResolveTemplate("{{input.lang}}-{{nodeResults.n1.val}}")
+	require.NoError(t, err)
+	assert.Equal(t, "go-42", got)
+}
+
+func TestResolveTemplate_NoExpression(t *testing.T) {
+	ctx := execution.NewPipelineContext(uuid.New(), "t1", nil)
+	got, err := ctx.ResolveTemplate("plain text")
+	require.NoError(t, err)
+	assert.Equal(t, "plain text", got)
+}
+
+func TestResolveTemplate_UnknownNode_ReturnsError(t *testing.T) {
+	ctx := execution.NewPipelineContext(uuid.New(), "t1", nil)
+	_, err := ctx.ResolveTemplate("{{nodeResults.missing_node.field}}")
+	require.Error(t, err)
+}
+
+func TestResolveTemplate_UnclosedBrace_ReturnsError(t *testing.T) {
+	ctx := execution.NewPipelineContext(uuid.New(), "t1", nil)
+	_, err := ctx.ResolveTemplate("{{nodeResults.n1.field")
+	require.Error(t, err)
+}
+
+// --- JSON round-trip ---
+
+func TestPipelineContext_JSONRoundTrip(t *testing.T) {
+	ctx := execution.NewPipelineContext(uuid.New(), "t1", nil)
+	ctx.SetNodeOutput("n1", map[string]any{"a": float64(1)})
+	ctx.SetNodeOutput("n2", map[string]any{"b": "hello"})
+
+	data, err := ctx.MarshalJSON()
+	require.NoError(t, err)
+
+	ctx2 := execution.NewPipelineContext(uuid.New(), "t1", nil)
+	err = ctx2.UnmarshalJSON(data)
+	require.NoError(t, err)
+
+	out, ok := ctx2.GetNodeOutput("n1")
+	require.True(t, ok)
+	assert.Equal(t, float64(1), out["a"])
+}
