@@ -6,6 +6,7 @@ toolchain go1.24.13
 
 require (
 	github.com/AgentHub-Studio/agenthub-go-commons v0.0.0-00010101000000-000000000000
+	github.com/expr-lang/expr v1.16.9
 	github.com/go-chi/chi/v5 v5.2.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.4

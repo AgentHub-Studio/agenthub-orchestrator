@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
+
+	"github.com/expr-lang/expr"
 
 	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/ai"
 )
@@ -374,65 +377,77 @@ func (e *toolExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineCo
 
 type ifExecutor struct{}
 
+// Execute evaluates the condition expression using expr-lang/expr against the upstream node output.
+// The condition may reference upstream fields directly (e.g. "score > 0.8", "status == 'active'").
+// Returns branch="true" or branch="false".
 func (e *ifExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
 	condition, _ := node.Config["condition"].(string)
-	inputNodeID, _ := node.Config["inputNodeId"].(string)
+	if condition == "" {
+		return map[string]any{"condition": "", "branch": "true"}, nil
+	}
 
-	// Evaluate simple key=value conditions against upstream node output.
-	branch := "true"
-	if inputNodeID != "" && condition != "" {
+	env := map[string]any{}
+	inputNodeID, _ := node.Config["inputNodeId"].(string)
+	if inputNodeID != "" {
 		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
-			branch = evaluateCondition(condition, out)
+			env = out
 		}
+	}
+
+	result, err := evalBoolExpr(condition, env)
+	if err != nil {
+		return nil, fmt.Errorf("if node: expression eval: %w", err)
+	}
+	branch := "false"
+	if result {
+		branch = "true"
 	}
 	return map[string]any{"condition": condition, "branch": branch}, nil
 }
 
-// evaluateCondition evaluates a simple "key==value" or "key!=value" expression.
-func evaluateCondition(condition string, data map[string]any) string {
-	for op, negate := range map[string]bool{"==": false, "!=": true} {
-		parts := splitTwo(condition, op)
-		if len(parts) != 2 {
-			continue
-		}
-		key, expected := parts[0], parts[1]
-		actual := fmt.Sprintf("%v", data[key])
-		match := actual == expected
-		if negate {
-			match = !match
-		}
-		if match {
-			return "true"
-		}
-		return "false"
-	}
-	return "true" // default when condition cannot be evaluated
-}
-
-func splitTwo(s, sep string) []string {
-	idx := -1
-	for i := 0; i <= len(s)-len(sep); i++ {
-		if s[i:i+len(sep)] == sep {
-			idx = i
-			break
+// evalBoolExpr evaluates an expr-lang/expr expression that must return bool.
+// env contains the upstream node output fields as variables.
+func evalBoolExpr(expression string, env map[string]any) (bool, error) {
+	program, err := expr.Compile(expression, expr.Env(env), expr.AsBool())
+	if err != nil {
+		// Fallback: try without type assertion (expr may infer non-bool)
+		program, err = expr.Compile(expression, expr.Env(env))
+		if err != nil {
+			return false, fmt.Errorf("compile %q: %w", expression, err)
 		}
 	}
-	if idx < 0 {
-		return nil
+	out, err := expr.Run(program, env)
+	if err != nil {
+		return false, fmt.Errorf("eval %q: %w", expression, err)
 	}
-	return []string{s[:idx], s[idx+len(sep):]}
+	b, ok := out.(bool)
+	if !ok {
+		return false, fmt.Errorf("expression %q did not return bool (got %T)", expression, out)
+	}
+	return b, nil
 }
 
 // --- FOREACH ---
 
+// defaultForeachConcurrency is the default max parallel workers for FOREACH.
+const defaultForeachConcurrency = 4
+
 type foreachExecutor struct{}
 
+// Execute iterates over items from the upstream node output in parallel using a worker pool.
+// Config: inputNodeId (string), itemsKey (string, default "items"), concurrency (int, default 4).
+// Each item is processed independently; results collected in order.
 func (e *foreachExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
 	inputNodeID, _ := node.Config["inputNodeId"].(string)
 	itemsKey, _ := node.Config["itemsKey"].(string)
 	if itemsKey == "" {
 		itemsKey = "items"
 	}
+	concurrency := defaultForeachConcurrency
+	if v, ok := node.Config["concurrency"].(int); ok && v > 0 {
+		concurrency = v
+	}
+
 	var items []any
 	if inputNodeID != "" {
 		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
@@ -441,27 +456,72 @@ func (e *foreachExecutor) Execute(_ context.Context, node *Node, pctx *PipelineC
 			}
 		}
 	}
-	return map[string]any{"items": items, "count": len(items), "status": "foreach_ready"}, nil
+
+	if len(items) == 0 {
+		return map[string]any{"items": []any{}, "count": 0, "results": []any{}}, nil
+	}
+
+	results := make([]any, len(items))
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+
+	for i, item := range items {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int, it any) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			mu.Lock()
+			results[idx] = map[string]any{"index": idx, "item": it}
+			mu.Unlock()
+		}(i, item)
+	}
+	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return map[string]any{"items": items, "count": len(items), "results": results}, nil
 }
 
 // --- SWITCH ---
 
 type switchExecutor struct{}
 
+// Execute evaluates the expression using expr-lang/expr against upstream output and routes to the matching branch.
+// Config: inputNodeId (string), expression (string) — evaluated to a string value, cases (map[string]string), default (string).
 func (e *switchExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
 	inputNodeID, _ := node.Config["inputNodeId"].(string)
-	valueKey, _ := node.Config["valueKey"].(string)
+	expression, _ := node.Config["expression"].(string)
 	cases, _ := node.Config["cases"].(map[string]any)
+	defaultBranch, _ := node.Config["default"].(string)
+	if defaultBranch == "" {
+		defaultBranch = "default"
+	}
 
-	var value string
+	env := map[string]any{}
 	if inputNodeID != "" {
 		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
-			if v, ok := out[valueKey].(string); ok {
-				value = v
-			}
+			env = out
 		}
 	}
-	branch := "default"
+
+	var value string
+	if expression != "" {
+		program, err := expr.Compile(expression, expr.Env(env))
+		if err != nil {
+			return nil, fmt.Errorf("switch node: compile expression %q: %w", expression, err)
+		}
+		out, err := expr.Run(program, env)
+		if err != nil {
+			return nil, fmt.Errorf("switch node: eval expression %q: %w", expression, err)
+		}
+		value = fmt.Sprintf("%v", out)
+	}
+
+	branch := defaultBranch
 	if cases != nil {
 		if b, ok := cases[value].(string); ok {
 			branch = b
@@ -472,20 +532,64 @@ func (e *switchExecutor) Execute(_ context.Context, node *Node, pctx *PipelineCo
 
 // --- MERGE ---
 
+// MergeStrategy controls how outputs from multiple sources are combined.
+type MergeStrategy string
+
+const (
+	MergeStrategyAll    MergeStrategy = "MERGE_ALL" // merge all keys (last wins on conflict)
+	MergeStrategyFirst  MergeStrategy = "FIRST"     // keep only the first source's output
+	MergeStrategyLast   MergeStrategy = "LAST"      // keep only the last source's output
+	MergeStrategyConcat MergeStrategy = "CONCAT"    // collect all outputs into a "results" array
+)
+
 type mergeExecutor struct{}
 
+// Execute merges outputs from multiple source nodes using the configured strategy.
+// Config: sources ([]string), strategy (string: MERGE_ALL|FIRST|LAST|CONCAT, default MERGE_ALL).
 func (e *mergeExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
 	sources, _ := node.Config["sources"].([]any)
-	result := map[string]any{}
+	strategy := MergeStrategyAll
+	if s, ok := node.Config["strategy"].(string); ok && s != "" {
+		strategy = MergeStrategy(s)
+	}
+
+	var collected []map[string]any
 	for _, s := range sources {
 		nodeID, _ := s.(string)
 		if out, ok := pctx.GetNodeOutput(nodeID); ok {
-			for k, v := range out {
+			collected = append(collected, out)
+		}
+	}
+
+	switch strategy {
+	case MergeStrategyFirst:
+		if len(collected) == 0 {
+			return map[string]any{}, nil
+		}
+		return collected[0], nil
+
+	case MergeStrategyLast:
+		if len(collected) == 0 {
+			return map[string]any{}, nil
+		}
+		return collected[len(collected)-1], nil
+
+	case MergeStrategyConcat:
+		items := make([]any, len(collected))
+		for i, m := range collected {
+			items[i] = m
+		}
+		return map[string]any{"results": items, "count": len(items)}, nil
+
+	default: // MERGE_ALL
+		result := map[string]any{}
+		for _, m := range collected {
+			for k, v := range m {
 				result[k] = v
 			}
 		}
+		return result, nil
 	}
-	return result, nil
 }
 
 // --- JOIN ---
