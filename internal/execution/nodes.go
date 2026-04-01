@@ -32,7 +32,7 @@ type NodeRegistry struct {
 // NewNodeRegistry creates a NodeRegistry with all built-in executors.
 // providerRegistry may be nil when LLM nodes are not required.
 // skillRuntimeURL is the base URL of the skill-runtime service for TOOL node delegation.
-func NewNodeRegistry(providerRegistry *ai.ProviderRegistry, skillRuntimeURL string) *NodeRegistry {
+func NewNodeRegistry(providerRegistry *ai.ProviderRegistry, skillRuntimeURL string, embeddingURL string) *NodeRegistry {
 	r := &NodeRegistry{executors: make(map[string]NodeExecutor)}
 	// Basic
 	r.executors["INPUT"] = &inputExecutor{}
@@ -40,7 +40,7 @@ func NewNodeRegistry(providerRegistry *ai.ProviderRegistry, skillRuntimeURL stri
 	r.executors["TRANSFORM"] = &transformExecutor{}
 	// AI
 	r.executors["LLM"] = &llmExecutor{registry: providerRegistry}
-	r.executors["EMBED"] = &embedExecutor{}
+	r.executors["EMBED"] = &embedExecutor{embeddingURL: embeddingURL}
 	// Data
 	r.executors["SQL"] = &sqlExecutor{}
 	r.executors["HTTP"] = &httpExecutor{}
@@ -187,9 +187,11 @@ func (e *llmExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineCon
 
 // --- EMBED ---
 
-type embedExecutor struct{}
+type embedExecutor struct {
+	embeddingURL string
+}
 
-func (e *embedExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+func (e *embedExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
 	inputNodeID, _ := node.Config["inputNodeId"].(string)
 	field, _ := node.Config["field"].(string)
 	if field == "" {
@@ -210,10 +212,42 @@ func (e *embedExecutor) Execute(_ context.Context, node *Node, pctx *PipelineCon
 	if text == "" {
 		text, _ = node.Config["text"].(string)
 	}
+	if text == "" {
+		return nil, fmt.Errorf("embed node: no text to embed (set 'text' config or 'inputNodeId')")
+	}
+
+	if e.embeddingURL == "" {
+		return nil, fmt.Errorf("embed node: EMBEDDING_URL not configured")
+	}
+
+	// Call agenthub-embedding service: POST /embed {"text": "..."}
+	body, _ := json.Marshal(map[string]string{"text": text})
+	req, err := newHTTPRequest(ctx, http.MethodPost, e.embeddingURL+"/embed", body)
+	if err != nil {
+		return nil, fmt.Errorf("embed node: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := defaultHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("embed node: call embedding service: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("embed node: embedding service returned %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Embedding []float32 `json:"embedding"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("embed node: decode response: %w", err)
+	}
 
 	return map[string]any{
 		"text":      text,
-		"embedding": nil, // populated by embedding service at runtime
+		"embedding": result.Embedding,
 	}, nil
 }
 

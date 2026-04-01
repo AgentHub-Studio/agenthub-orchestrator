@@ -18,6 +18,7 @@ type Config struct {
 	DatabaseURL     string
 	KeycloakBaseURL string
 	SkillRuntimeURL string
+	EmbeddingURL    string
 	RabbitMQURL     string
 	OTLPEndpoint    string
 	CORSOrigins     []string
@@ -37,6 +38,7 @@ func Load() (*Config, error) {
 		DatabaseURL:     os.Getenv("DATABASE_URL"),
 		KeycloakBaseURL: os.Getenv("KEYCLOAK_BASE_URL"),
 		SkillRuntimeURL: getEnv("SKILL_RUNTIME_URL", "http://agenthub-skill-runtime:8085"),
+		EmbeddingURL:    getEnv("EMBEDDING_URL", "http://agenthub-embedding:8000"),
 		RabbitMQURL:     os.Getenv("RABBITMQ_URL"),
 		OTLPEndpoint:    os.Getenv("OTLP_ENDPOINT"),
 		LogLevel:        getEnv("LOG_LEVEL", "info"),
