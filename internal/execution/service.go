@@ -85,8 +85,8 @@ func (s *Service) runPipeline(ctx context.Context, tenantID string, executionID,
 	conn, err := s.repo.pool.Acquire(ctx)
 	if err == nil {
 		defer conn.Release()
-		conn.Exec(ctx, fmt.Sprintf("SET search_path TO ah_%s, public", tenantID))
-		conn.Exec(ctx, `UPDATE agent_execution SET output=$1 WHERE id=$2`, string(outputJSON), executionID)
+		_, _ = conn.Exec(ctx, fmt.Sprintf("SET search_path TO ah_%s, public", tenantID))
+		_, _ = conn.Exec(ctx, `UPDATE agent_execution SET output=$1 WHERE id=$2`, string(outputJSON), executionID)
 	}
 
 	slog.Info("pipeline execution completed", "executionId", executionID)
