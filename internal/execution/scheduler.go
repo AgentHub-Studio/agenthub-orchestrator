@@ -8,10 +8,14 @@ import (
 )
 
 // Scheduler executes a DAG using parallel goroutines per level.
-type Scheduler struct{}
+type Scheduler struct {
+	nodeRegistry *NodeRegistry
+}
 
-// NewScheduler creates a Scheduler.
-func NewScheduler() *Scheduler { return &Scheduler{} }
+// NewScheduler creates a Scheduler with the given node registry.
+func NewScheduler(nodeRegistry *NodeRegistry) *Scheduler {
+	return &Scheduler{nodeRegistry: nodeRegistry}
+}
 
 // Run executes the DAG in topological order, parallelising nodes at each level.
 // Each node's output is stored in pctx so downstream nodes can access it.
@@ -32,7 +36,7 @@ func (s *Scheduler) Run(ctx context.Context, dag *DAG, pctx *PipelineContext) er
 			go func(n *Node) {
 				defer wg.Done()
 
-				exec, err := GetNodeExecutor(n.Type)
+				exec, err := s.nodeRegistry.Get(n.Type)
 				if err != nil {
 					errs <- fmt.Errorf("scheduler: node %q: %w", n.ID, err)
 					return

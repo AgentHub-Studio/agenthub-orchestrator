@@ -6,6 +6,12 @@ import (
 	"strings"
 )
 
+// LLMProviderConfig holds configuration for a single LLM provider.
+type LLMProviderConfig struct {
+	APIKey  string
+	BaseURL string // optional override
+}
+
 // Config holds all configuration for agenthub-orchestrator.
 type Config struct {
 	Port            string
@@ -16,6 +22,12 @@ type Config struct {
 	OTLPEndpoint    string
 	CORSOrigins     []string
 	LogLevel        string
+
+	// LLM provider configurations.
+	OpenAI      LLMProviderConfig
+	Anthropic   LLMProviderConfig
+	Ollama      LLMProviderConfig
+	OpenRouter  LLMProviderConfig
 }
 
 // Load reads configuration from environment variables.
@@ -39,6 +51,22 @@ func Load() (*Config, error) {
 
 	corsOrigins := getEnv("CORS_ORIGINS", "*")
 	cfg.CORSOrigins = strings.Split(corsOrigins, ",")
+
+	cfg.OpenAI = LLMProviderConfig{
+		APIKey:  os.Getenv("OPENAI_API_KEY"),
+		BaseURL: os.Getenv("OPENAI_BASE_URL"),
+	}
+	cfg.Anthropic = LLMProviderConfig{
+		APIKey:  os.Getenv("ANTHROPIC_API_KEY"),
+		BaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
+	}
+	cfg.Ollama = LLMProviderConfig{
+		BaseURL: getEnv("OLLAMA_BASE_URL", "http://ollama:11434"),
+	}
+	cfg.OpenRouter = LLMProviderConfig{
+		APIKey:  os.Getenv("OPENROUTER_API_KEY"),
+		BaseURL: os.Getenv("OPENROUTER_BASE_URL"),
+	}
 
 	return cfg, nil
 }

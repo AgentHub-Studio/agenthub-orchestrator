@@ -15,9 +15,9 @@ type Handler struct {
 	svc *Service
 }
 
-// NewHandler creates an execution Handler.
-func NewHandler(pool *pgxpool.Pool, _ string) *Handler {
-	return &Handler{svc: NewService(pool)}
+// NewHandler creates an execution Handler with the given node registry.
+func NewHandler(pool *pgxpool.Pool, nodeRegistry *NodeRegistry) *Handler {
+	return &Handler{svc: NewService(pool, nodeRegistry)}
 }
 
 // Routes returns the chi router for execution endpoints.

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+
+	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/ai"
 )
 
 // NodeExecutor processes a single pipeline node.
@@ -12,18 +14,26 @@ type NodeExecutor interface {
 	Execute(ctx context.Context, node *Node, pctx *PipelineContext) (map[string]any, error)
 }
 
-// nodeExecutorRegistry maps node types to their executors.
-var nodeExecutorRegistry = map[string]NodeExecutor{
-	"INPUT":     &inputExecutor{},
-	"OUTPUT":    &outputExecutor{},
-	"TRANSFORM": &transformExecutor{},
-	"IF":        &ifExecutor{},
-	"LLM":       &llmExecutor{},
+// NodeRegistry holds all node executors and provides lookup by type.
+type NodeRegistry struct {
+	executors map[string]NodeExecutor
 }
 
-// GetNodeExecutor returns the executor for nodeType or an error if not found.
-func GetNodeExecutor(nodeType string) (NodeExecutor, error) {
-	e, ok := nodeExecutorRegistry[nodeType]
+// NewNodeRegistry creates a NodeRegistry with all built-in executors.
+// providerRegistry may be nil when LLM nodes are not required.
+func NewNodeRegistry(providerRegistry *ai.ProviderRegistry) *NodeRegistry {
+	r := &NodeRegistry{executors: make(map[string]NodeExecutor)}
+	r.executors["INPUT"] = &inputExecutor{}
+	r.executors["OUTPUT"] = &outputExecutor{}
+	r.executors["TRANSFORM"] = &transformExecutor{}
+	r.executors["IF"] = &ifExecutor{}
+	r.executors["LLM"] = &llmExecutor{registry: providerRegistry}
+	return r
+}
+
+// Get returns the executor for nodeType or an error if not found.
+func (r *NodeRegistry) Get(nodeType string) (NodeExecutor, error) {
+	e, ok := r.executors[nodeType]
 	if !ok {
 		return nil, fmt.Errorf("nodes: no executor for type %q", nodeType)
 	}
@@ -101,11 +111,15 @@ func (e *ifExecutor) Execute(_ context.Context, node *Node, _ *PipelineContext) 
 
 // --- LLM node ---
 
-type llmExecutor struct{}
+type llmExecutor struct {
+	registry *ai.ProviderRegistry
+}
 
 func (e *llmExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
 	// LLM nodes call a language model. Config specifies model, system prompt, and input source.
 	systemPrompt, _ := node.Config["systemPrompt"].(string)
+	modelName, _ := node.Config["model"].(string)
+	providerName, _ := node.Config["provider"].(string)
 	inputNodeID, _ := node.Config["inputNodeId"].(string)
 
 	var userMessage string
@@ -114,24 +128,58 @@ func (e *llmExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineCon
 			if msg, ok := out["message"].(string); ok {
 				userMessage = msg
 			} else {
-				// Serialize the whole output as JSON.
 				b, _ := json.Marshal(out)
 				userMessage = string(b)
 			}
 		}
 	}
-
 	if userMessage == "" {
 		userMessage, _ = node.Config["prompt"].(string)
 	}
 
-	slog.Debug("llm node executing", "nodeId", node.ID, "systemPrompt", systemPrompt, "userMessage", userMessage)
+	slog.Debug("llm node executing", "nodeId", node.ID, "provider", providerName, "model", modelName)
 
-	// NOTE: In a full implementation, this would call the ai.ChatModel via the registry.
-	// For now, return a placeholder indicating the model was invoked.
+	// Resolve provider from registry.
+	if e.registry == nil {
+		return nil, fmt.Errorf("llm node: no AI provider registry configured")
+	}
+
+	var model ai.ChatModel
+	var err error
+	if providerName != "" {
+		model, err = e.registry.GetDefault(providerName)
+	} else {
+		// Fall back to any available provider.
+		names := e.registry.Available()
+		if len(names) == 0 {
+			return nil, fmt.Errorf("llm node: no AI providers registered")
+		}
+		model, err = e.registry.Get(names[0])
+	}
+	if err != nil {
+		return nil, fmt.Errorf("llm node: %w", err)
+	}
+
+	messages := []ai.Message{}
+	if systemPrompt != "" {
+		messages = append(messages, ai.Message{Role: ai.RoleSystem, Content: systemPrompt})
+	}
+	messages = append(messages, ai.Message{Role: ai.RoleUser, Content: userMessage})
+
+	opts := ai.ChatOptions{Model: modelName}
+	resp, err := model.Chat(ctx, messages, opts)
+	if err != nil {
+		return nil, fmt.Errorf("llm node: chat error: %w", err)
+	}
+
 	return map[string]any{
-		"response":     fmt.Sprintf("[LLM response for: %s]", userMessage),
-		"model":        node.Config["model"],
-		"finish_reason": "stop",
+		"response":     resp.Content,
+		"model":        resp.Model,
+		"finishReason": resp.FinishReason,
+		"usage": map[string]any{
+			"promptTokens":     resp.Usage.PromptTokens,
+			"completionTokens": resp.Usage.CompletionTokens,
+			"totalTokens":      resp.Usage.TotalTokens,
+		},
 	}, nil
 }

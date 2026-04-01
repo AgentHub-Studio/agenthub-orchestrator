@@ -9,6 +9,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/ai"
+	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/ai/provider/anthropic"
+	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/ai/provider/ollama"
+	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/ai/provider/openai"
+	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/ai/provider/openrouter"
 	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/config"
 	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/database"
 	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/server"
@@ -32,7 +37,9 @@ func main() {
 	}
 	defer pool.Close()
 
-	srv := server.New(cfg, pool)
+	providerRegistry := buildProviderRegistry(cfg)
+
+	srv := server.New(cfg, pool, providerRegistry)
 
 	httpServer := &http.Server{
 		Addr:         ":" + cfg.Port,
@@ -64,6 +71,35 @@ func main() {
 	}
 
 	slog.Info("server stopped")
+}
+
+// buildProviderRegistry creates an AI provider registry from config.
+// Providers with no API key are skipped silently.
+func buildProviderRegistry(cfg *config.Config) *ai.ProviderRegistry {
+	reg := ai.NewProviderRegistry()
+
+	if cfg.OpenAI.APIKey != "" {
+		p := openai.New(cfg.OpenAI.APIKey, cfg.OpenAI.BaseURL)
+		reg.Register("openai", p)
+		slog.Info("ai: registered openai provider")
+	}
+	if cfg.Anthropic.APIKey != "" {
+		p := anthropic.New(cfg.Anthropic.APIKey, cfg.Anthropic.BaseURL)
+		reg.Register("anthropic", p)
+		slog.Info("ai: registered anthropic provider")
+	}
+	if cfg.Ollama.BaseURL != "" {
+		p := ollama.New(cfg.Ollama.BaseURL)
+		reg.Register("ollama", p)
+		slog.Info("ai: registered ollama provider", "baseURL", cfg.Ollama.BaseURL)
+	}
+	if cfg.OpenRouter.APIKey != "" {
+		p := openrouter.New(cfg.OpenRouter.APIKey, cfg.OpenRouter.BaseURL, "agenthub-orchestrator")
+		reg.Register("openrouter", p)
+		slog.Info("ai: registered openrouter provider")
+	}
+
+	return reg
 }
 
 func setupLogger(level string) {

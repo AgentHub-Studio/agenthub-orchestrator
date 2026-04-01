@@ -6,20 +6,22 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/ai"
 	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/config"
 	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/execution"
 	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/middleware"
 )
 
 // New creates the HTTP server with all routes mounted.
-func New(cfg *config.Config, pool *pgxpool.Pool) http.Handler {
+func New(cfg *config.Config, pool *pgxpool.Pool, providerRegistry *ai.ProviderRegistry) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recovery)
 	r.Use(middleware.CORS(cfg.CORSOrigins))
 
-	execHandler := execution.NewHandler(pool, cfg.SkillRuntimeURL)
+	nodeRegistry := execution.NewNodeRegistry(providerRegistry)
+	execHandler := execution.NewHandler(pool, nodeRegistry)
 	r.Mount("/api/executions", execHandler.Routes())
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {

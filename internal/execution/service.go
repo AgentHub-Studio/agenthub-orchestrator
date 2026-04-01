@@ -16,11 +16,11 @@ type Service struct {
 	scheduler *Scheduler
 }
 
-// NewService creates an execution Service.
-func NewService(pool *pgxpool.Pool) *Service {
+// NewService creates an execution Service with the given node registry.
+func NewService(pool *pgxpool.Pool, nodeRegistry *NodeRegistry) *Service {
 	return &Service{
 		repo:      NewRepository(pool),
-		scheduler: NewScheduler(),
+		scheduler: NewScheduler(nodeRegistry),
 	}
 }
 
