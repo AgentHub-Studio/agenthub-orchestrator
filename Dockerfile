@@ -1,21 +1,19 @@
-FROM amazoncorretto:25
+FROM golang:1.24-alpine AS builder
+RUN apk add --no-cache git ca-certificates tzdata
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-w -s -extldflags '-static'" \
+    -o /build/bin/orchestrator \
+    ./cmd/orchestrator
 
-RUN yum install -y fontconfig freetype dejavu-sans-fonts && yum clean all
-
-COPY target/agenthub-orchestrator-1.0.0-SNAPSHOT.jar /opt/app.jar
-
-ENV JAVA_OPTS="-server \
-    --enable-native-access=ALL-UNNAMED \
-    -Xms512M \
-    -Xmx2G \
-    -XX:+UseG1GC \
-    -XX:MaxGCPauseMillis=200 \
-    -Duser.timezone=Brazil/East \
-    -Duser.language=pt \
-    -Duser.country=BR \
-    -Djava.net.preferIPv4Stack=true \
-    -Djava.awt.headless=true"
-
-EXPOSE 8082
-
-ENTRYPOINT exec java $JAVA_OPTS -jar /opt/app.jar
+FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=builder /build/bin/orchestrator /orchestrator
+EXPOSE 8084
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/orchestrator", "-health"] || exit 1
+ENTRYPOINT ["/orchestrator"]
