@@ -42,9 +42,9 @@ func NewNodeRegistry(providerRegistry *ai.ProviderRegistry, skillRuntimeURL stri
 	r.executors["LLM"] = &llmExecutor{registry: providerRegistry}
 	r.executors["EMBED"] = &embedExecutor{}
 	// Data
-	r.executors["SQL"] = &sqlExecutor{}
+	r.executors["SQL"] = &sqlExecutor{skillRuntimeURL: skillRuntimeURL}
 	r.executors["HTTP"] = &httpExecutor{}
-	r.executors["DOCUMENT_SEARCH"] = &documentSearchExecutor{}
+	r.executors["DOCUMENT_SEARCH"] = &documentSearchExecutor{skillRuntimeURL: skillRuntimeURL}
 	r.executors["TOOL"] = &toolExecutor{skillRuntimeURL: skillRuntimeURL}
 	// Control
 	r.executors["IF"] = &ifExecutor{}
@@ -219,59 +219,127 @@ func (e *embedExecutor) Execute(_ context.Context, node *Node, pctx *PipelineCon
 
 // --- SQL ---
 
-type sqlExecutor struct{}
+// sqlExecutor delegates SQL execution to the skill-runtime service.
+// Node config: skillSlug (required), datasourceId (required), query (required), inputNodeId (optional).
+type sqlExecutor struct {
+	skillRuntimeURL string
+}
 
-func (e *sqlExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+func (e *sqlExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	skillSlug, _ := node.Config["skillSlug"].(string)
+	if skillSlug == "" {
+		return nil, fmt.Errorf("sql node: missing required config 'skillSlug'")
+	}
 	query, _ := node.Config["query"].(string)
 	if query == "" {
 		return nil, fmt.Errorf("sql node: missing required config 'query'")
 	}
+	datasourceID, _ := node.Config["datasourceId"].(string)
+
+	input := map[string]any{
+		"query":        query,
+		"datasourceId": datasourceID,
+	}
+	// Merge upstream node output as additional params.
 	inputNodeID, _ := node.Config["inputNodeId"].(string)
-	var params map[string]any
 	if inputNodeID != "" {
 		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
-			params = out
+			for k, v := range out {
+				if _, exists := input[k]; !exists {
+					input[k] = v
+				}
+			}
 		}
 	}
-	slog.Debug("sql node queued", "nodeId", node.ID)
-	return map[string]any{"query": query, "params": params, "status": "queued"}, nil
+
+	if e.skillRuntimeURL == "" {
+		return nil, fmt.Errorf("sql node: skill-runtime URL not configured")
+	}
+	return callSkillRuntime(ctx, e.skillRuntimeURL, skillSlug, input)
 }
 
 // --- HTTP ---
 
 type httpExecutor struct{}
 
-func (e *httpExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+func (e *httpExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
 	method, _ := node.Config["method"].(string)
 	if method == "" {
 		method = "GET"
 	}
-	url, _ := node.Config["url"].(string)
-	if url == "" {
+	rawURL, _ := node.Config["url"].(string)
+	if rawURL == "" {
 		return nil, fmt.Errorf("http node: missing required config 'url'")
 	}
+
+	// Build request body from upstream node output or explicit body config.
+	var bodyBytes []byte
 	inputNodeID, _ := node.Config["inputNodeId"].(string)
-	var input map[string]any
 	if inputNodeID != "" {
 		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
-			input = out
+			bodyBytes, _ = json.Marshal(out)
+		}
+	} else if body, ok := node.Config["body"]; ok {
+		bodyBytes, _ = json.Marshal(body)
+	}
+
+	req, err := newHTTPRequest(ctx, method, rawURL, bodyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("http node: build request: %w", err)
+	}
+
+	// Apply custom headers from config.
+	if headers, ok := node.Config["headers"].(map[string]any); ok {
+		for k, v := range headers {
+			if vs, ok := v.(string); ok {
+				req.Header.Set(k, vs)
+			}
 		}
 	}
-	slog.Debug("http node queued", "nodeId", node.ID, "method", method, "url", url)
-	return map[string]any{"method": method, "url": url, "input": input, "status": "queued"}, nil
+	if len(bodyBytes) > 0 && req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := defaultHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http node: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var responseBody any
+	if err := json.NewDecoder(resp.Body).Decode(&responseBody); err != nil {
+		responseBody = nil
+	}
+
+	slog.Debug("http node executed", "nodeId", node.ID, "method", method, "url", rawURL, "status", resp.StatusCode)
+	return map[string]any{
+		"statusCode": resp.StatusCode,
+		"body":       responseBody,
+		"ok":         resp.StatusCode >= 200 && resp.StatusCode < 300,
+	}, nil
 }
 
 // --- DOCUMENT_SEARCH ---
 
-type documentSearchExecutor struct{}
+// documentSearchExecutor delegates vector search to the skill-runtime service.
+// Node config: skillSlug (required), knowledgeBaseId (required), query (optional), inputNodeId (optional), topK (optional).
+type documentSearchExecutor struct {
+	skillRuntimeURL string
+}
 
-func (e *documentSearchExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+func (e *documentSearchExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	skillSlug, _ := node.Config["skillSlug"].(string)
+	if skillSlug == "" {
+		return nil, fmt.Errorf("document_search node: missing required config 'skillSlug'")
+	}
 	knowledgeBaseID, _ := node.Config["knowledgeBaseId"].(string)
 	if knowledgeBaseID == "" {
 		return nil, fmt.Errorf("document_search node: missing required config 'knowledgeBaseId'")
 	}
-	inputNodeID, _ := node.Config["inputNodeId"].(string)
+
+	// Resolve query from upstream output or explicit config.
 	var query string
+	inputNodeID, _ := node.Config["inputNodeId"].(string)
 	if inputNodeID != "" {
 		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
 			if q, ok := out["query"].(string); ok {
@@ -284,16 +352,42 @@ func (e *documentSearchExecutor) Execute(_ context.Context, node *Node, pctx *Pi
 	if query == "" {
 		query, _ = node.Config["query"].(string)
 	}
+
 	topK, _ := node.Config["topK"].(float64)
 	if topK == 0 {
 		topK = 5
 	}
-	return map[string]any{
+
+	input := map[string]any{
 		"knowledgeBaseId": knowledgeBaseID,
 		"query":           query,
 		"topK":            int(topK),
-		"documents":       []any{},
-	}, nil
+	}
+
+	if e.skillRuntimeURL == "" {
+		return nil, fmt.Errorf("document_search node: skill-runtime URL not configured")
+	}
+	return callSkillRuntime(ctx, e.skillRuntimeURL, skillSlug, input)
+}
+
+// callSkillRuntime is shared helper used by SQL and DOCUMENT_SEARCH executors.
+func callSkillRuntime(ctx context.Context, skillRuntimeURL, skillSlug string, input map[string]any) (map[string]any, error) {
+	body, _ := json.Marshal(input)
+	req, err := newHTTPRequest(ctx, "POST", skillRuntimeURL+"/api/skills/"+skillSlug+"/execute", body)
+	if err != nil {
+		return nil, fmt.Errorf("skill-runtime request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := defaultHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("skill-runtime request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("skill-runtime decode response: %w", err)
+	}
+	return result, nil
 }
 
 // --- TOOL ---
