@@ -26,10 +26,26 @@ type LlmPresetConfig struct {
 
 // presetConfigJSON contains optional fields stored in config_json.
 type presetConfigJSON struct {
-	Temperature      float64 `json:"temperature"`
-	MaxTokens        int     `json:"max_tokens"`
-	TopP             float64 `json:"top_p"`
-	SystemMessage    string  `json:"system_message"`
+	Temperature   float64 `json:"temperature"`
+	MaxTokens     int     `json:"max_tokens"`
+	TopP          float64 `json:"top_p"`
+	SystemMessage string  `json:"system_message"`
+	// APIKey and BaseURL allow per-preset credential overrides that take
+	// precedence over the globally-configured environment variables.
+	APIKey  string `json:"api_key"`
+	BaseURL string `json:"base_url"`
+}
+
+// OverrideCredentials returns the api_key and base_url stored in config_json,
+// if any. These values take precedence over the environment-variable defaults
+// registered at startup, enabling per-tenant or per-preset API keys.
+func (p LlmPresetConfig) OverrideCredentials() (apiKey, baseURL string) {
+	if len(p.ConfigJSON) == 0 {
+		return "", ""
+	}
+	var cfg presetConfigJSON
+	_ = json.Unmarshal(p.ConfigJSON, &cfg)
+	return cfg.APIKey, cfg.BaseURL
 }
 
 // ToChatOptions converts the preset configuration to ChatOptions.

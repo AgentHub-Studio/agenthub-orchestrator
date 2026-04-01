@@ -95,6 +95,68 @@ func TestProviderRegistry_ThreadSafe(t *testing.T) {
 	}
 }
 
+func TestLlmPresetConfig_OverrideCredentials_Present(t *testing.T) {
+	cfg := ai.LlmPresetConfig{
+		ConfigJSON: json.RawMessage(`{"api_key":"sk-custom","base_url":"https://proxy.example.com/v1"}`),
+	}
+	apiKey, baseURL := cfg.OverrideCredentials()
+	assert.Equal(t, "sk-custom", apiKey)
+	assert.Equal(t, "https://proxy.example.com/v1", baseURL)
+}
+
+func TestLlmPresetConfig_OverrideCredentials_Absent(t *testing.T) {
+	cfg := ai.LlmPresetConfig{
+		ConfigJSON: json.RawMessage(`{"temperature":0.5}`),
+	}
+	apiKey, baseURL := cfg.OverrideCredentials()
+	assert.Empty(t, apiKey)
+	assert.Empty(t, baseURL)
+}
+
+func TestProviderRegistry_GetChatModel_PresetCredentialOverride(t *testing.T) {
+	r := ai.NewProviderRegistry()
+
+	ai.RegisterFactory("OPENAI", func(_, _ string) ai.ChatModel {
+		return &stubModel{name: "openai-custom"}
+	})
+
+	preset := ai.LlmPresetConfig{
+		Name:       "tenant-preset",
+		Provider:   "OPENAI",
+		ModelID:    "gpt-4o",
+		ConfigJSON: json.RawMessage(`{"api_key":"sk-tenant-key","base_url":""}`),
+	}
+
+	// First call: creates a new instance via factory.
+	got1, opts1, err := r.GetChatModel(preset)
+	require.NoError(t, err)
+	assert.Equal(t, "gpt-4o", opts1.Model)
+	assert.NotNil(t, got1)
+
+	// Second call with same credentials: must return cached instance.
+	got2, _, err := r.GetChatModel(preset)
+	require.NoError(t, err)
+	assert.Same(t, got1, got2, "same credentials should return the cached instance")
+}
+
+func TestProviderRegistry_GetChatModel_DifferentCredentialsDifferentInstances(t *testing.T) {
+	r := ai.NewProviderRegistry()
+	ai.RegisterFactory("ANTHROPIC", func(_, apiKey string) ai.ChatModel {
+		return &stubModel{name: "anthropic-" + apiKey}
+	})
+
+	presetA := ai.LlmPresetConfig{Provider: "ANTHROPIC", ModelID: "claude-3", ConfigJSON: json.RawMessage(`{"api_key":"key-A"}`)}
+	presetB := ai.LlmPresetConfig{Provider: "ANTHROPIC", ModelID: "claude-3", ConfigJSON: json.RawMessage(`{"api_key":"key-B"}`)}
+
+	modelA, _, err := r.GetChatModel(presetA)
+	require.NoError(t, err)
+	modelB, _, err := r.GetChatModel(presetB)
+	require.NoError(t, err)
+
+	// Different API keys → different instances.
+	assert.NotSame(t, modelA, modelB)
+}
+
 func TestEnvConfig_Defaults(t *testing.T) {
 	// Ensure no panic and sensible defaults when env vars are unset.
 	t.Setenv("OPENAI_API_KEY", "")
