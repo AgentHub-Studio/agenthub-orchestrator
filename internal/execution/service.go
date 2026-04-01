@@ -5,22 +5,42 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/rabbitmq"
 )
+
+// EventPublisher publishes execution lifecycle events to a message broker.
+// A nil implementation is safe — events are silently dropped when no broker is configured.
+type EventPublisher interface {
+	Publish(ctx context.Context, event rabbitmq.ExecutionEvent) error
+}
+
+// noopPublisher discards all events. Used when RABBITMQ_URL is not set.
+type noopPublisher struct{}
+
+func (noopPublisher) Publish(_ context.Context, _ rabbitmq.ExecutionEvent) error { return nil }
 
 // Service orchestrates agent executions.
 type Service struct {
 	repo      *Repository
 	scheduler *Scheduler
+	publisher EventPublisher
 }
 
 // NewService creates an execution Service with the given node registry.
-func NewService(pool *pgxpool.Pool, nodeRegistry *NodeRegistry) *Service {
+// publisher may be nil — a no-op publisher is used in that case.
+func NewService(pool *pgxpool.Pool, nodeRegistry *NodeRegistry, publisher EventPublisher) *Service {
+	if publisher == nil {
+		publisher = noopPublisher{}
+	}
 	return &Service{
 		repo:      NewRepository(pool),
 		scheduler: NewScheduler(nodeRegistry),
+		publisher: publisher,
 	}
 }
 
@@ -48,10 +68,19 @@ func (s *Service) StartExecution(ctx context.Context, tenantID string, req Creat
 
 // runPipeline loads the agent pipeline and runs it via the DAG scheduler.
 func (s *Service) runPipeline(ctx context.Context, tenantID string, executionID, agentID uuid.UUID, input map[string]any) {
+	startedAt := time.Now()
+
 	if err := s.repo.UpdateStatus(ctx, tenantID, executionID, StatusRunning, ""); err != nil {
 		slog.Error("failed to update execution status to running", "err", err)
 		return
 	}
+	s.publishEvent(ctx, rabbitmq.ExecutionEvent{
+		ExecutionID: executionID.String(),
+		TenantID:    tenantID,
+		AgentID:     agentID.String(),
+		Status:      string(StatusRunning),
+		StartedAt:   startedAt,
+	})
 
 	// NOTE: In a full implementation, the pipeline nodes/edges would be loaded from the
 	// agenthub-api database. For now, create a minimal single-node pipeline.
@@ -69,6 +98,18 @@ func (s *Service) runPipeline(ctx context.Context, tenantID string, executionID,
 		if updateErr := s.repo.UpdateStatus(ctx, tenantID, executionID, StatusFailed, err.Error()); updateErr != nil {
 			slog.Error("failed to update execution status to failed", "err", updateErr)
 		}
+		finishedAt := time.Now()
+		s.publishEvent(ctx, rabbitmq.ExecutionEvent{
+			ExecutionID: executionID.String(),
+			TenantID:    tenantID,
+			AgentID:     agentID.String(),
+			Status:      string(StatusFailed),
+			StartedAt:   startedAt,
+			FinishedAt:  &finishedAt,
+			DurationMs:  time.Since(startedAt).Milliseconds(),
+			NodeCount:   len(nodes),
+			ErrorMsg:    err.Error(),
+		})
 		return
 	}
 
@@ -88,6 +129,18 @@ func (s *Service) runPipeline(ctx context.Context, tenantID string, executionID,
 		_, _ = conn.Exec(ctx, fmt.Sprintf("SET search_path TO ah_%s, public", tenantID))
 		_, _ = conn.Exec(ctx, `UPDATE agent_execution SET output=$1 WHERE id=$2`, string(outputJSON), executionID)
 	}
+
+	finishedAt := time.Now()
+	s.publishEvent(ctx, rabbitmq.ExecutionEvent{
+		ExecutionID: executionID.String(),
+		TenantID:    tenantID,
+		AgentID:     agentID.String(),
+		Status:      string(StatusCompleted),
+		StartedAt:   startedAt,
+		FinishedAt:  &finishedAt,
+		DurationMs:  time.Since(startedAt).Milliseconds(),
+		NodeCount:   len(nodes),
+	})
 
 	slog.Info("pipeline execution completed", "executionId", executionID)
 }
@@ -112,5 +165,25 @@ func (s *Service) CancelExecution(ctx context.Context, tenantID string, id uuid.
 	if err := Transition(exec.Status, StatusCancelled); err != nil {
 		return fmt.Errorf("service: %w", err)
 	}
-	return s.repo.UpdateStatus(ctx, tenantID, id, StatusCancelled, "")
+	if err := s.repo.UpdateStatus(ctx, tenantID, id, StatusCancelled, ""); err != nil {
+		return err
+	}
+	now := time.Now()
+	s.publishEvent(ctx, rabbitmq.ExecutionEvent{
+		ExecutionID: id.String(),
+		TenantID:    tenantID,
+		AgentID:     exec.AgentID.String(),
+		Status:      string(StatusCancelled),
+		StartedAt:   exec.StartedAt,
+		FinishedAt:  &now,
+	})
+	return nil
+}
+
+// publishEvent fires an event without blocking the caller.
+// Log-only on failure — event loss is acceptable over slowing the pipeline.
+func (s *Service) publishEvent(ctx context.Context, event rabbitmq.ExecutionEvent) {
+	if err := s.publisher.Publish(ctx, event); err != nil {
+		slog.Warn("failed to publish execution event", "executionId", event.ExecutionID, "err", err)
+	}
 }

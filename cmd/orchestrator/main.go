@@ -16,6 +16,8 @@ import (
 	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/ai/provider/openrouter"
 	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/config"
 	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/database"
+	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/execution"
+	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/rabbitmq"
 	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/server"
 )
 
@@ -39,7 +41,21 @@ func main() {
 
 	providerRegistry := buildProviderRegistry(cfg)
 
-	srv := server.New(cfg, pool, providerRegistry)
+	// Connect to RabbitMQ for execution event publishing.
+	// If RABBITMQ_URL is not set, events are silently dropped (noop publisher).
+	var publisher execution.EventPublisher
+	if cfg.RabbitMQURL != "" {
+		p, err := rabbitmq.NewPublisher(cfg.RabbitMQURL)
+		if err != nil {
+			slog.Warn("rabbitmq unavailable, execution events will be dropped", "err", err)
+		} else {
+			publisher = p
+			defer p.Close()
+			slog.Info("rabbitmq: connected, publishing execution events")
+		}
+	}
+
+	srv := server.New(cfg, pool, providerRegistry, publisher)
 
 	httpServer := &http.Server{
 		Addr:         ":" + cfg.Port,

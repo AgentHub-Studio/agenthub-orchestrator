@@ -13,7 +13,7 @@ import (
 )
 
 // New creates the HTTP server with all routes mounted.
-func New(cfg *config.Config, pool *pgxpool.Pool, providerRegistry *ai.ProviderRegistry) http.Handler {
+func New(cfg *config.Config, pool *pgxpool.Pool, providerRegistry *ai.ProviderRegistry, publisher execution.EventPublisher) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger)
@@ -21,7 +21,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, providerRegistry *ai.ProviderRe
 	r.Use(middleware.CORS(cfg.CORSOrigins))
 
 	nodeRegistry := execution.NewNodeRegistry(providerRegistry, cfg.SkillRuntimeURL)
-	execHandler := execution.NewHandler(pool, nodeRegistry)
+	execHandler := execution.NewHandler(pool, nodeRegistry, publisher)
 	r.Mount("/api/executions", execHandler.Routes())
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
