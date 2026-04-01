@@ -12,10 +12,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Checkout agenthub-go-commons
+        uses: actions/checkout@v4
+        with:
+          repository: AgentHub-Studio/agenthub-go-commons
+          path: _go_commons
+
+      - name: Link go-commons to /agenthub-go-commons
+        run: sudo ln -s "$GITHUB_WORKSPACE/_go_commons" /agenthub-go-commons
+
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
           cache: true
+
       - run: go build ./...
       - run: go test -v -race ./...
 
@@ -23,10 +34,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Checkout agenthub-go-commons
+        uses: actions/checkout@v4
+        with:
+          repository: AgentHub-Studio/agenthub-go-commons
+          path: _go_commons
+
+      - name: Link go-commons to /agenthub-go-commons
+        run: sudo ln -s "$GITHUB_WORKSPACE/_go_commons" /agenthub-go-commons
+
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
           cache: true
+
       - uses: golangci/golangci-lint-action@v6
         with:
           version: latest

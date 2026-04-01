@@ -6,6 +6,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	gocommons_auth "github.com/AgentHub-Studio/agenthub-go-commons/auth"
+	gocommons_tenant "github.com/AgentHub-Studio/agenthub-go-commons/tenant"
+
 	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/ai"
 	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/config"
 	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/execution"
@@ -20,12 +23,18 @@ func New(cfg *config.Config, pool *pgxpool.Pool, providerRegistry *ai.ProviderRe
 	r.Use(middleware.Recovery)
 	r.Use(middleware.CORS(cfg.CORSOrigins))
 
-	nodeRegistry := execution.NewNodeRegistry(providerRegistry, cfg.SkillRuntimeURL, cfg.EmbeddingURL)
-	execHandler := execution.NewHandler(pool, nodeRegistry, publisher)
-	r.Mount("/api/executions", execHandler.Routes())
-
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
+	})
+
+	nodeRegistry := execution.NewNodeRegistry(providerRegistry, cfg.SkillRuntimeURL, cfg.EmbeddingURL)
+	execHandler := execution.NewHandler(pool, nodeRegistry, publisher)
+
+	// Protected API routes — require valid Keycloak JWT
+	r.Group(func(r chi.Router) {
+		r.Use(gocommons_auth.Middleware(gocommons_auth.Config{KeycloakBaseURL: cfg.KeycloakBaseURL}))
+		r.Use(gocommons_tenant.Middleware())
+		r.Mount("/api/executions", execHandler.Routes())
 	})
 
 	return r
