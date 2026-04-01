@@ -20,7 +20,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, providerRegistry *ai.ProviderRe
 	r.Use(middleware.Recovery)
 	r.Use(middleware.CORS(cfg.CORSOrigins))
 
-	nodeRegistry := execution.NewNodeRegistry(providerRegistry)
+	nodeRegistry := execution.NewNodeRegistry(providerRegistry, cfg.SkillRuntimeURL)
 	execHandler := execution.NewHandler(pool, nodeRegistry)
 	r.Mount("/api/executions", execHandler.Routes())
 

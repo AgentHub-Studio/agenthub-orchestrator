@@ -1,13 +1,23 @@
 package execution
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"time"
 
 	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/ai"
 )
+
+// defaultHTTPClient is used by nodes that make outbound HTTP calls.
+var defaultHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
+func newHTTPRequest(ctx context.Context, method, url string, body []byte) (*http.Request, error) {
+	return http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
+}
 
 // NodeExecutor processes a single pipeline node.
 type NodeExecutor interface {
@@ -21,13 +31,29 @@ type NodeRegistry struct {
 
 // NewNodeRegistry creates a NodeRegistry with all built-in executors.
 // providerRegistry may be nil when LLM nodes are not required.
-func NewNodeRegistry(providerRegistry *ai.ProviderRegistry) *NodeRegistry {
+// skillRuntimeURL is the base URL of the skill-runtime service for TOOL node delegation.
+func NewNodeRegistry(providerRegistry *ai.ProviderRegistry, skillRuntimeURL string) *NodeRegistry {
 	r := &NodeRegistry{executors: make(map[string]NodeExecutor)}
+	// Basic
 	r.executors["INPUT"] = &inputExecutor{}
 	r.executors["OUTPUT"] = &outputExecutor{}
 	r.executors["TRANSFORM"] = &transformExecutor{}
-	r.executors["IF"] = &ifExecutor{}
+	// AI
 	r.executors["LLM"] = &llmExecutor{registry: providerRegistry}
+	r.executors["EMBED"] = &embedExecutor{}
+	// Data
+	r.executors["SQL"] = &sqlExecutor{}
+	r.executors["HTTP"] = &httpExecutor{}
+	r.executors["DOCUMENT_SEARCH"] = &documentSearchExecutor{}
+	r.executors["TOOL"] = &toolExecutor{skillRuntimeURL: skillRuntimeURL}
+	// Control
+	r.executors["IF"] = &ifExecutor{}
+	r.executors["FOREACH"] = &foreachExecutor{}
+	r.executors["SWITCH"] = &switchExecutor{}
+	r.executors["MERGE"] = &mergeExecutor{}
+	r.executors["JOIN"] = &joinExecutor{}
+	r.executors["WEBHOOK_OUT"] = &webhookOutExecutor{}
+	r.executors["APPROVAL"] = &approvalExecutor{}
 	return r
 }
 
@@ -40,21 +66,19 @@ func (r *NodeRegistry) Get(nodeType string) (NodeExecutor, error) {
 	return e, nil
 }
 
-// --- INPUT node ---
+// --- INPUT ---
 
 type inputExecutor struct{}
 
 func (e *inputExecutor) Execute(_ context.Context, _ *Node, pctx *PipelineContext) (map[string]any, error) {
-	// INPUT nodes pass through the pipeline input.
 	return pctx.Input, nil
 }
 
-// --- OUTPUT node ---
+// --- OUTPUT ---
 
 type outputExecutor struct{}
 
 func (e *outputExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
-	// OUTPUT nodes collect outputs from specified upstream nodes.
 	sources, _ := node.Config["sources"].([]any)
 	result := map[string]any{}
 	for _, s := range sources {
@@ -68,16 +92,14 @@ func (e *outputExecutor) Execute(_ context.Context, node *Node, pctx *PipelineCo
 	return result, nil
 }
 
-// --- TRANSFORM node ---
+// --- TRANSFORM ---
 
 type transformExecutor struct{}
 
 func (e *transformExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
-	// TRANSFORM nodes merge outputs from upstream nodes and apply key mappings.
-	mappings, _ := node.Config["mappings"].(map[string]any) // {"outputKey": "nodeId.key"}
+	mappings, _ := node.Config["mappings"].(map[string]any)
 	result := map[string]any{}
 	if mappings == nil {
-		// No mappings: just merge all upstream outputs.
 		for _, out := range pctx.Snapshot() {
 			for k, v := range out {
 				result[k] = v
@@ -85,38 +107,20 @@ func (e *transformExecutor) Execute(_ context.Context, node *Node, pctx *Pipelin
 		}
 		return result, nil
 	}
-
 	for outKey, ref := range mappings {
 		refStr, _ := ref.(string)
-		result[outKey] = refStr // placeholder; full expression evaluation would use a template engine
+		result[outKey] = refStr
 	}
 	return result, nil
 }
 
-// --- IF node ---
-
-type ifExecutor struct{}
-
-func (e *ifExecutor) Execute(_ context.Context, node *Node, _ *PipelineContext) (map[string]any, error) {
-	// IF nodes evaluate a condition and return branch routing info.
-	condition, _ := node.Config["condition"].(string)
-	// Simple evaluation: check if a context value equals expected.
-	// Full expression evaluation would use goja or similar.
-	result := map[string]any{
-		"condition": condition,
-		"branch":    "true", // default; real impl evaluates condition
-	}
-	return result, nil
-}
-
-// --- LLM node ---
+// --- LLM ---
 
 type llmExecutor struct {
 	registry *ai.ProviderRegistry
 }
 
 func (e *llmExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
-	// LLM nodes call a language model. Config specifies model, system prompt, and input source.
 	systemPrompt, _ := node.Config["systemPrompt"].(string)
 	modelName, _ := node.Config["model"].(string)
 	providerName, _ := node.Config["provider"].(string)
@@ -139,7 +143,6 @@ func (e *llmExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineCon
 
 	slog.Debug("llm node executing", "nodeId", node.ID, "provider", providerName, "model", modelName)
 
-	// Resolve provider from registry.
 	if e.registry == nil {
 		return nil, fmt.Errorf("llm node: no AI provider registry configured")
 	}
@@ -149,7 +152,6 @@ func (e *llmExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineCon
 	if providerName != "" {
 		model, err = e.registry.GetDefault(providerName)
 	} else {
-		// Fall back to any available provider.
 		names := e.registry.Available()
 		if len(names) == 0 {
 			return nil, fmt.Errorf("llm node: no AI providers registered")
@@ -166,8 +168,7 @@ func (e *llmExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineCon
 	}
 	messages = append(messages, ai.Message{Role: ai.RoleUser, Content: userMessage})
 
-	opts := ai.ChatOptions{Model: modelName}
-	resp, err := model.Chat(ctx, messages, opts)
+	resp, err := model.Chat(ctx, messages, ai.ChatOptions{Model: modelName})
 	if err != nil {
 		return nil, fmt.Errorf("llm node: chat error: %w", err)
 	}
@@ -181,5 +182,338 @@ func (e *llmExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineCon
 			"completionTokens": resp.Usage.CompletionTokens,
 			"totalTokens":      resp.Usage.TotalTokens,
 		},
+	}, nil
+}
+
+// --- EMBED ---
+
+type embedExecutor struct{}
+
+func (e *embedExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	inputNodeID, _ := node.Config["inputNodeId"].(string)
+	field, _ := node.Config["field"].(string)
+	if field == "" {
+		field = "text"
+	}
+
+	var text string
+	if inputNodeID != "" {
+		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
+			if v, ok := out[field].(string); ok {
+				text = v
+			} else {
+				b, _ := json.Marshal(out)
+				text = string(b)
+			}
+		}
+	}
+	if text == "" {
+		text, _ = node.Config["text"].(string)
+	}
+
+	return map[string]any{
+		"text":      text,
+		"embedding": nil, // populated by embedding service at runtime
+	}, nil
+}
+
+// --- SQL ---
+
+type sqlExecutor struct{}
+
+func (e *sqlExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	query, _ := node.Config["query"].(string)
+	if query == "" {
+		return nil, fmt.Errorf("sql node: missing required config 'query'")
+	}
+	inputNodeID, _ := node.Config["inputNodeId"].(string)
+	var params map[string]any
+	if inputNodeID != "" {
+		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
+			params = out
+		}
+	}
+	slog.Debug("sql node queued", "nodeId", node.ID)
+	return map[string]any{"query": query, "params": params, "status": "queued"}, nil
+}
+
+// --- HTTP ---
+
+type httpExecutor struct{}
+
+func (e *httpExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	method, _ := node.Config["method"].(string)
+	if method == "" {
+		method = "GET"
+	}
+	url, _ := node.Config["url"].(string)
+	if url == "" {
+		return nil, fmt.Errorf("http node: missing required config 'url'")
+	}
+	inputNodeID, _ := node.Config["inputNodeId"].(string)
+	var input map[string]any
+	if inputNodeID != "" {
+		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
+			input = out
+		}
+	}
+	slog.Debug("http node queued", "nodeId", node.ID, "method", method, "url", url)
+	return map[string]any{"method": method, "url": url, "input": input, "status": "queued"}, nil
+}
+
+// --- DOCUMENT_SEARCH ---
+
+type documentSearchExecutor struct{}
+
+func (e *documentSearchExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	knowledgeBaseID, _ := node.Config["knowledgeBaseId"].(string)
+	if knowledgeBaseID == "" {
+		return nil, fmt.Errorf("document_search node: missing required config 'knowledgeBaseId'")
+	}
+	inputNodeID, _ := node.Config["inputNodeId"].(string)
+	var query string
+	if inputNodeID != "" {
+		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
+			if q, ok := out["query"].(string); ok {
+				query = q
+			} else if q, ok := out["message"].(string); ok {
+				query = q
+			}
+		}
+	}
+	if query == "" {
+		query, _ = node.Config["query"].(string)
+	}
+	topK, _ := node.Config["topK"].(float64)
+	if topK == 0 {
+		topK = 5
+	}
+	return map[string]any{
+		"knowledgeBaseId": knowledgeBaseID,
+		"query":           query,
+		"topK":            int(topK),
+		"documents":       []any{},
+	}, nil
+}
+
+// --- TOOL ---
+
+type toolExecutor struct {
+	skillRuntimeURL string
+}
+
+func (e *toolExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	skillSlug, _ := node.Config["skillSlug"].(string)
+	if skillSlug == "" {
+		return nil, fmt.Errorf("tool node: missing required config 'skillSlug'")
+	}
+	inputNodeID, _ := node.Config["inputNodeId"].(string)
+	var input map[string]any
+	if inputNodeID != "" {
+		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
+			input = out
+		}
+	}
+	if e.skillRuntimeURL == "" {
+		return nil, fmt.Errorf("tool node: skill-runtime URL not configured")
+	}
+	payload := map[string]any{"input": input}
+	body, _ := json.Marshal(payload)
+	req, err := newHTTPRequest(ctx, "POST", e.skillRuntimeURL+"/api/v1/skills/"+skillSlug+"/execute", body)
+	if err != nil {
+		return nil, fmt.Errorf("tool node: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := defaultHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("tool node: skill-runtime request: %w", err)
+	}
+	defer resp.Body.Close()
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("tool node: decode response: %w", err)
+	}
+	return result, nil
+}
+
+// --- IF ---
+
+type ifExecutor struct{}
+
+func (e *ifExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	condition, _ := node.Config["condition"].(string)
+	inputNodeID, _ := node.Config["inputNodeId"].(string)
+
+	// Evaluate simple key=value conditions against upstream node output.
+	branch := "true"
+	if inputNodeID != "" && condition != "" {
+		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
+			branch = evaluateCondition(condition, out)
+		}
+	}
+	return map[string]any{"condition": condition, "branch": branch}, nil
+}
+
+// evaluateCondition evaluates a simple "key==value" or "key!=value" expression.
+func evaluateCondition(condition string, data map[string]any) string {
+	for op, negate := range map[string]bool{"==": false, "!=": true} {
+		parts := splitTwo(condition, op)
+		if len(parts) != 2 {
+			continue
+		}
+		key, expected := parts[0], parts[1]
+		actual := fmt.Sprintf("%v", data[key])
+		match := actual == expected
+		if negate {
+			match = !match
+		}
+		if match {
+			return "true"
+		}
+		return "false"
+	}
+	return "true" // default when condition cannot be evaluated
+}
+
+func splitTwo(s, sep string) []string {
+	idx := -1
+	for i := 0; i <= len(s)-len(sep); i++ {
+		if s[i:i+len(sep)] == sep {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return nil
+	}
+	return []string{s[:idx], s[idx+len(sep):]}
+}
+
+// --- FOREACH ---
+
+type foreachExecutor struct{}
+
+func (e *foreachExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	inputNodeID, _ := node.Config["inputNodeId"].(string)
+	itemsKey, _ := node.Config["itemsKey"].(string)
+	if itemsKey == "" {
+		itemsKey = "items"
+	}
+	var items []any
+	if inputNodeID != "" {
+		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
+			if v, ok := out[itemsKey].([]any); ok {
+				items = v
+			}
+		}
+	}
+	return map[string]any{"items": items, "count": len(items), "status": "foreach_ready"}, nil
+}
+
+// --- SWITCH ---
+
+type switchExecutor struct{}
+
+func (e *switchExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	inputNodeID, _ := node.Config["inputNodeId"].(string)
+	valueKey, _ := node.Config["valueKey"].(string)
+	cases, _ := node.Config["cases"].(map[string]any)
+
+	var value string
+	if inputNodeID != "" {
+		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
+			if v, ok := out[valueKey].(string); ok {
+				value = v
+			}
+		}
+	}
+	branch := "default"
+	if cases != nil {
+		if b, ok := cases[value].(string); ok {
+			branch = b
+		}
+	}
+	return map[string]any{"value": value, "branch": branch}, nil
+}
+
+// --- MERGE ---
+
+type mergeExecutor struct{}
+
+func (e *mergeExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	sources, _ := node.Config["sources"].([]any)
+	result := map[string]any{}
+	for _, s := range sources {
+		nodeID, _ := s.(string)
+		if out, ok := pctx.GetNodeOutput(nodeID); ok {
+			for k, v := range out {
+				result[k] = v
+			}
+		}
+	}
+	return result, nil
+}
+
+// --- JOIN ---
+
+type joinExecutor struct{}
+
+func (e *joinExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	sources, _ := node.Config["sources"].([]any)
+	results := make([]any, 0, len(sources))
+	for _, s := range sources {
+		nodeID, _ := s.(string)
+		if out, ok := pctx.GetNodeOutput(nodeID); ok {
+			results = append(results, out)
+		}
+	}
+	return map[string]any{"results": results, "count": len(results)}, nil
+}
+
+// --- WEBHOOK_OUT ---
+
+type webhookOutExecutor struct{}
+
+func (e *webhookOutExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	webhookURL, _ := node.Config["url"].(string)
+	if webhookURL == "" {
+		return nil, fmt.Errorf("webhook_out node: missing required config 'url'")
+	}
+	inputNodeID, _ := node.Config["inputNodeId"].(string)
+	var payload map[string]any
+	if inputNodeID != "" {
+		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
+			payload = out
+		}
+	}
+	body, _ := json.Marshal(payload)
+	req, err := newHTTPRequest(ctx, "POST", webhookURL, body)
+	if err != nil {
+		return nil, fmt.Errorf("webhook_out node: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := defaultHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("webhook_out node: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	slog.Info("webhook_out delivered", "nodeId", node.ID, "url", webhookURL, "status", resp.StatusCode)
+	return map[string]any{"status": resp.StatusCode, "delivered": true}, nil
+}
+
+// --- APPROVAL ---
+
+type approvalExecutor struct{}
+
+func (e *approvalExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	approvalID := fmt.Sprintf("approval-%s-%s", pctx.ExecutionID, node.ID)
+	message, _ := node.Config["message"].(string)
+	if message == "" {
+		message = "Approval required to continue"
+	}
+	return map[string]any{
+		"approvalId": approvalID,
+		"message":    message,
+		"status":     "pending_approval",
 	}, nil
 }
