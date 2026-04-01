@@ -7,10 +7,13 @@ import (
 )
 
 // ProviderRegistry holds configured LLM providers keyed by name.
+// It also caches per-preset provider instances (keyed by provider+apiKey+baseURL)
+// so that multiple presets sharing the same credentials reuse the same HTTP client.
 type ProviderRegistry struct {
-	mu        sync.RWMutex
-	providers map[string]ChatModel
-	defaults  map[string]ChatModel // keyed by provider type ("openai", "anthropic", etc.)
+	mu            sync.RWMutex
+	providers     map[string]ChatModel
+	defaults      map[string]ChatModel // keyed by provider type ("OPENAI", "ANTHROPIC", etc.)
+	instanceCache sync.Map             // key: "PROVIDER|apiKey|baseURL" → ChatModel
 }
 
 // NewProviderRegistry creates an empty ProviderRegistry.
@@ -71,4 +74,61 @@ func (r *ProviderRegistry) Available() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// GetChatModel resolves a ChatModel from an LlmPresetConfig.
+//
+// Resolution order:
+//  1. If config_json contains api_key, create (or return cached) a provider
+//     instance with those credentials — preset credentials override env vars.
+//  2. Try the preset name as a registry key (allows per-preset named overrides).
+//  3. Fall back to the default registered provider for the provider type.
+//
+// Returns ErrProviderNotFound if no suitable provider can be resolved.
+func (r *ProviderRegistry) GetChatModel(preset LlmPresetConfig) (ChatModel, ChatOptions, error) {
+	opts, err := preset.ToChatOptions()
+	if err != nil {
+		return nil, ChatOptions{}, err
+	}
+
+	// Preset-level credential override — takes highest priority.
+	if apiKey, baseURL := preset.OverrideCredentials(); apiKey != "" {
+		model, err := r.getOrCreateCachedModel(normaliseProviderType(preset.Provider), apiKey, baseURL)
+		if err != nil {
+			return nil, ChatOptions{}, err
+		}
+		return model, opts, nil
+	}
+
+	// Try by preset name (allows per-preset named overrides).
+	if model, lookupErr := r.Get(preset.Name); lookupErr == nil {
+		return model, opts, nil
+	}
+
+	// Fall back to provider type default.
+	model, err := r.GetDefault(normaliseProviderType(preset.Provider))
+	if err != nil {
+		return nil, ChatOptions{}, fmt.Errorf("%w: %s", ErrProviderNotFound, preset.Provider)
+	}
+	return model, opts, nil
+}
+
+// getOrCreateCachedModel returns a ChatModel for the given provider type and credentials,
+// creating it via the registered factory on first access and caching it for reuse.
+// This avoids allocating multiple HTTP clients when multiple presets share the same config.
+func (r *ProviderRegistry) getOrCreateCachedModel(providerType, apiKey, baseURL string) (ChatModel, error) {
+	cacheKey := providerType + "|" + apiKey + "|" + baseURL
+	if cached, ok := r.instanceCache.Load(cacheKey); ok {
+		return cached.(ChatModel), nil
+	}
+
+	factory, err := FactoryFor(providerType)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrProviderNotFound, providerType)
+	}
+
+	model := factory(baseURL, apiKey)
+	// Use LoadOrStore so a concurrent caller wins the race gracefully.
+	actual, _ := r.instanceCache.LoadOrStore(cacheKey, model)
+	return actual.(ChatModel), nil
 }
