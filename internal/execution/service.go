@@ -109,6 +109,9 @@ func (s *Service) runPipeline(ctx context.Context, tenantID, bearerToken string,
 	dag := NewDAG(nodes, edges)
 
 	pctx := NewPipelineContext(executionID, tenantID, input)
+	if bearerToken != "" {
+		pctx.SetValue("bearerToken", bearerToken)
+	}
 
 	if err := s.scheduler.Run(ctx, dag, pctx); err != nil {
 		slog.Error("pipeline execution failed", "executionId", executionID, "err", err)

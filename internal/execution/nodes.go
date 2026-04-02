@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/expr-lang/expr"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/AgentHub-Studio/agenthub-orchestrator/internal/ai"
 )
@@ -35,7 +37,8 @@ type NodeRegistry struct {
 // NewNodeRegistry creates a NodeRegistry with all built-in executors.
 // providerRegistry may be nil when LLM nodes are not required.
 // skillRuntimeURL is the base URL of the skill-runtime service for TOOL node delegation.
-func NewNodeRegistry(providerRegistry *ai.ProviderRegistry, skillRuntimeURL string, embeddingURL string) *NodeRegistry {
+// agentHubAPIURL is the base URL of agenthub-api (for OAuth credential and datasource resolution).
+func NewNodeRegistry(providerRegistry *ai.ProviderRegistry, skillRuntimeURL string, embeddingURL string, agentHubAPIURL string) *NodeRegistry {
 	r := &NodeRegistry{executors: make(map[string]NodeExecutor)}
 	// Basic
 	r.executors["INPUT"] = &inputExecutor{}
@@ -47,8 +50,8 @@ func NewNodeRegistry(providerRegistry *ai.ProviderRegistry, skillRuntimeURL stri
 	r.executors["RETRIEVE"] = &retrieveExecutor{embeddingURL: embeddingURL}
 	r.executors["RERANK"] = &rerankExecutor{embeddingURL: embeddingURL}
 	// Data
-	r.executors["SQL"] = &sqlExecutor{}
-	r.executors["HTTP"] = &httpExecutor{}
+	r.executors["SQL"] = &sqlExecutor{agentHubAPIURL: agentHubAPIURL}
+	r.executors["HTTP"] = &httpExecutor{agentHubAPIURL: agentHubAPIURL}
 	r.executors["DOCUMENT_SEARCH"] = &documentSearchExecutor{}
 	r.executors["TOOL"] = &toolExecutor{skillRuntimeURL: skillRuntimeURL}
 	// Control
@@ -258,46 +261,257 @@ func (e *embedExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineC
 
 // --- SQL ---
 
-type sqlExecutor struct{}
+// sqlExecutor executes a SQL query against a datasource registered in the tenant schema.
+//
+// Config fields:
+//   - datasourceId: UUID of the data_source row in the tenant schema
+//   - query: SQL query (may use {{input.field}} templates)
+//   - maxRows: maximum rows to return (default 100)
+//   - inputNodeId: optional upstream node whose output populates template variables
+type sqlExecutor struct {
+	agentHubAPIURL string
+}
 
-func (e *sqlExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+// sqlDatasourceResponse mirrors the datasource response from agenthub-api /api/proxy/datasources/{id}.
+type sqlDatasourceResponse struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Database string `json:"database"`
+	User     string `json:"user"`
+	Password string `json:"password"`
+}
+
+func (e *sqlExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	datasourceID, _ := node.Config["datasourceId"].(string)
 	query, _ := node.Config["query"].(string)
+	if datasourceID == "" {
+		return nil, fmt.Errorf("sql node: missing required config 'datasourceId'")
+	}
 	if query == "" {
 		return nil, fmt.Errorf("sql node: missing required config 'query'")
 	}
-	inputNodeID, _ := node.Config["inputNodeId"].(string)
-	var params map[string]any
-	if inputNodeID != "" {
-		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
-			params = out
-		}
-	}
-	slog.Debug("sql node queued", "nodeId", node.ID)
-	return map[string]any{"query": query, "params": params, "status": "queued"}, nil
-}
 
-// --- HTTP ---
-
-type httpExecutor struct{}
-
-func (e *httpExecutor) Execute(_ context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
-	method, _ := node.Config["method"].(string)
-	if method == "" {
-		method = "GET"
+	maxRows := 100
+	if mr, ok := node.Config["maxRows"].(float64); ok && mr > 0 {
+		maxRows = int(mr)
 	}
-	url, _ := node.Config["url"].(string)
-	if url == "" {
-		return nil, fmt.Errorf("http node: missing required config 'url'")
-	}
-	inputNodeID, _ := node.Config["inputNodeId"].(string)
+
+	// Resolve input for template substitution.
 	var input map[string]any
-	if inputNodeID != "" {
+	if inputNodeID, _ := node.Config["inputNodeId"].(string); inputNodeID != "" {
 		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
 			input = out
 		}
 	}
-	slog.Debug("http node queued", "nodeId", node.ID, "method", method, "url", url)
-	return map[string]any{"method": method, "url": url, "input": input, "status": "queued"}, nil
+	renderedQuery := renderNodeTemplate(query, input)
+
+	if e.agentHubAPIURL == "" {
+		slog.Warn("sql node: agentHubAPIURL not configured, returning query preview")
+		return map[string]any{"query": renderedQuery, "status": "skipped"}, nil
+	}
+
+	// Fetch datasource credentials from agenthub-api (proxy credentials endpoint).
+	ds, err := e.fetchDatasource(ctx, pctx, datasourceID)
+	if err != nil {
+		return nil, fmt.Errorf("sql node: fetch datasource: %w", err)
+	}
+
+	// Build DSN — only PostgreSQL is supported in the orchestrator node.
+	if ds.Type != "POSTGRESQL" {
+		return nil, fmt.Errorf("sql node: unsupported datasource type %q; only POSTGRESQL is supported", ds.Type)
+	}
+
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable", ds.User, ds.Password, ds.Host, ds.Port, ds.Database)
+	pool, err := connectSQL(ctx, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("sql node: connect to datasource: %w", err)
+	}
+	defer pool.Close()
+
+	rows, err := pool.Query(ctx, renderedQuery)
+	if err != nil {
+		return nil, fmt.Errorf("sql node: execute query: %w", err)
+	}
+	defer rows.Close()
+
+	fields := rows.FieldDescriptions()
+	colNames := make([]string, len(fields))
+	for i, f := range fields {
+		colNames[i] = string(f.Name)
+	}
+
+	var results []map[string]any
+	for rows.Next() && len(results) < maxRows {
+		vals, err := rows.Values()
+		if err != nil {
+			return nil, fmt.Errorf("sql node: scan row: %w", err)
+		}
+		row := make(map[string]any, len(colNames))
+		for i, col := range colNames {
+			row[col] = vals[i]
+		}
+		results = append(results, row)
+	}
+
+	return map[string]any{
+		"rows":    results,
+		"count":   len(results),
+		"columns": colNames,
+	}, nil
+}
+
+func (e *sqlExecutor) fetchDatasource(ctx context.Context, pctx *PipelineContext, datasourceID string) (*sqlDatasourceResponse, error) {
+	reqURL := e.agentHubAPIURL + "/api/proxy/datasources/" + datasourceID
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if token := pctx.GetValue("bearerToken"); token != nil {
+		req.Header.Set("Authorization", fmt.Sprintf("%v", token))
+	}
+	resp, err := defaultHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	var ds sqlDatasourceResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ds); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &ds, nil
+}
+
+// oauthResolveResponse mirrors GET /api/oauth-credentials/{id}/resolve response.
+type oauthResolveResponse struct {
+	Header string `json:"header"`
+	Value  string `json:"value"`
+}
+
+// --- HTTP ---
+
+// httpExecutor makes outbound HTTP calls, optionally using OAuth credentials
+// stored in agenthub-api.
+//
+// Config fields:
+//   - url: target URL (supports {{input.field}} templates)
+//   - method: HTTP method (default GET)
+//   - headers: map[string]string of extra headers
+//   - body: request body string (supports {{input.field}} templates)
+//   - oauthCredentialId: UUID of an oauth_credential to use for auth
+//   - inputNodeId: optional upstream node whose output populates template variables
+type httpExecutor struct {
+	agentHubAPIURL string
+}
+
+func (e *httpExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	method, _ := node.Config["method"].(string)
+	if method == "" {
+		method = http.MethodGet
+	}
+	rawURL, _ := node.Config["url"].(string)
+	if rawURL == "" {
+		return nil, fmt.Errorf("http node: missing required config 'url'")
+	}
+
+	// Resolve input for template substitution.
+	var input map[string]any
+	if inputNodeID, _ := node.Config["inputNodeId"].(string); inputNodeID != "" {
+		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
+			input = out
+		}
+	}
+
+	targetURL := renderNodeTemplate(rawURL, input)
+
+	var bodyBytes []byte
+	if bodyTpl, _ := node.Config["body"].(string); bodyTpl != "" {
+		rendered := renderNodeTemplate(bodyTpl, input)
+		bodyBytes = []byte(rendered)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, targetURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("http node: build request: %w", err)
+	}
+	if len(bodyBytes) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	// Apply extra headers from config.
+	if hdrs, ok := node.Config["headers"].(map[string]any); ok {
+		for k, v := range hdrs {
+			req.Header.Set(k, renderNodeTemplate(fmt.Sprintf("%v", v), input))
+		}
+	}
+
+	// Resolve OAuth credential if specified.
+	if oauthID, _ := node.Config["oauthCredentialId"].(string); oauthID != "" && e.agentHubAPIURL != "" {
+		if authHeader, err := e.resolveOAuth(ctx, pctx, oauthID); err == nil {
+			req.Header.Set(authHeader.Header, authHeader.Value)
+		} else {
+			slog.Warn("http node: could not resolve oauth credential", "id", oauthID, "err", err)
+		}
+	}
+
+	resp, err := defaultHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http node: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var body any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		body = nil // non-JSON response is OK
+	}
+
+	return map[string]any{
+		"status":     resp.StatusCode,
+		"statusText": resp.Status,
+		"body":       body,
+	}, nil
+}
+
+func (e *httpExecutor) resolveOAuth(ctx context.Context, pctx *PipelineContext, credentialID string) (*oauthResolveResponse, error) {
+	reqURL := e.agentHubAPIURL + "/api/oauth-credentials/" + credentialID + "/resolve"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if token := pctx.GetValue("bearerToken"); token != nil {
+		req.Header.Set("Authorization", fmt.Sprintf("%v", token))
+	}
+	resp, err := defaultHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	var authResp oauthResolveResponse
+	if err := json.NewDecoder(resp.Body).Decode(&authResp); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &authResp, nil
+}
+
+// renderNodeTemplate replaces {{input.field}} placeholders in s with values from data.
+func renderNodeTemplate(s string, data map[string]any) string {
+	if data == nil || !bytes.ContainsAny([]byte(s), "{}") {
+		return s
+	}
+	result := s
+	for k, v := range data {
+		placeholder := "{{input." + k + "}}"
+		result = strings.ReplaceAll(result, placeholder, fmt.Sprintf("%v", v))
+	}
+	return result
 }
 
 // --- DOCUMENT_SEARCH ---
@@ -830,4 +1044,15 @@ func (e *rerankExecutor) Execute(ctx context.Context, node *Node, pctx *Pipeline
 	}
 
 	return map[string]any{"results": result.Results}, nil
+}
+
+// connectSQL opens a pgxpool connection to dsn.
+// The pool is single-use and the caller is responsible for closing it.
+func connectSQL(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse DSN: %w", err)
+	}
+	cfg.MaxConns = 2
+	return pgxpool.NewWithConfig(ctx, cfg)
 }
