@@ -28,7 +28,8 @@ func New(cfg *config.Config, pool *pgxpool.Pool, providerRegistry *ai.ProviderRe
 	})
 
 	nodeRegistry := execution.NewNodeRegistry(providerRegistry, cfg.SkillRuntimeURL, cfg.EmbeddingURL)
-	execHandler := execution.NewHandler(pool, nodeRegistry, publisher)
+	apiClient := execution.NewAPIClient(cfg.AgentHubAPIURL)
+	execHandler := execution.NewHandler(pool, nodeRegistry, publisher, apiClient)
 
 	// Protected API routes — require valid Keycloak JWT
 	r.Group(func(r chi.Router) {

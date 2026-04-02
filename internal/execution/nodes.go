@@ -44,6 +44,8 @@ func NewNodeRegistry(providerRegistry *ai.ProviderRegistry, skillRuntimeURL stri
 	// AI
 	r.executors["LLM"] = &llmExecutor{registry: providerRegistry}
 	r.executors["EMBED"] = &embedExecutor{embeddingURL: embeddingURL}
+	r.executors["RETRIEVE"] = &retrieveExecutor{embeddingURL: embeddingURL}
+	r.executors["RERANK"] = &rerankExecutor{embeddingURL: embeddingURL}
 	// Data
 	r.executors["SQL"] = &sqlExecutor{}
 	r.executors["HTTP"] = &httpExecutor{}
@@ -654,4 +656,178 @@ func (e *approvalExecutor) Execute(_ context.Context, node *Node, pctx *Pipeline
 		"message":    message,
 		"status":     "pending_approval",
 	}, nil
+}
+
+// --- RETRIEVE ---
+
+// retrieveExecutor fetches documents from a knowledge base using vector similarity search.
+// It calls the embedding service's search endpoint: POST {embeddingURL}/search.
+// Config keys: knowledgeBaseId (string), query (string), topK (int, default 5).
+// The query may also be resolved from an upstream node via inputNodeId config.
+type retrieveExecutor struct {
+	embeddingURL string
+}
+
+func (e *retrieveExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	knowledgeBaseID, _ := node.Config["knowledgeBaseId"].(string)
+	if knowledgeBaseID == "" {
+		return nil, fmt.Errorf("retrieve node: missing required config 'knowledgeBaseId'")
+	}
+
+	// Resolve query from upstream node output or direct config.
+	var query string
+	inputNodeID, _ := node.Config["inputNodeId"].(string)
+	if inputNodeID != "" {
+		if out, ok := pctx.GetNodeOutput(inputNodeID); ok {
+			if q, ok := out["query"].(string); ok {
+				query = q
+			} else if q, ok := out["message"].(string); ok {
+				query = q
+			}
+		}
+	}
+	if query == "" {
+		query, _ = node.Config["query"].(string)
+	}
+	if query == "" {
+		return nil, fmt.Errorf("retrieve node: missing required config 'query' (or set 'inputNodeId')")
+	}
+
+	topK := 5
+	if v, ok := node.Config["topK"].(float64); ok && v > 0 {
+		topK = int(v)
+	}
+
+	if e.embeddingURL == "" {
+		// Graceful degradation: return empty results when embedding service is not configured.
+		slog.Warn("retrieve node: EMBEDDING_URL not configured, returning empty results", "nodeId", node.ID)
+		return map[string]any{
+			"results": []any{},
+			"count":   0,
+		}, nil
+	}
+
+	payload, _ := json.Marshal(map[string]any{
+		"knowledgeBaseId": knowledgeBaseID,
+		"query":           query,
+		"topK":            topK,
+	})
+	req, err := newHTTPRequest(ctx, http.MethodPost, e.embeddingURL+"/search", payload)
+	if err != nil {
+		return nil, fmt.Errorf("retrieve node: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := defaultHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("retrieve node: call embedding service: %w", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("retrieve node: embedding service returned %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Results []any `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("retrieve node: decode response: %w", err)
+	}
+
+	return map[string]any{
+		"results": result.Results,
+		"count":   len(result.Results),
+	}, nil
+}
+
+// --- RERANK ---
+
+// rerankExecutor re-ranks a list of documents/results based on a query using the reranking model.
+// Config keys: query (string), documentsFrom (string — nodeId to get documents from), topN (int, default 3).
+// Calls POST {embeddingURL}/rerank with {"query": q, "documents": [...], "topN": n}.
+// Falls back to returning the first topN documents as-is when the rerank endpoint is unavailable.
+type rerankExecutor struct {
+	embeddingURL string
+}
+
+func (e *rerankExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineContext) (map[string]any, error) {
+	query, _ := node.Config["query"].(string)
+	documentsFrom, _ := node.Config["documentsFrom"].(string)
+	topN := 3
+	if v, ok := node.Config["topN"].(float64); ok && v > 0 {
+		topN = int(v)
+	}
+
+	// Resolve query from upstream node output when not set directly.
+	if query == "" && documentsFrom != "" {
+		if out, ok := pctx.GetNodeOutput(documentsFrom); ok {
+			if q, ok := out["query"].(string); ok {
+				query = q
+			}
+		}
+	}
+	if query == "" {
+		return nil, fmt.Errorf("rerank node: missing required config 'query'")
+	}
+
+	// Collect documents from the upstream node.
+	var documents []any
+	if documentsFrom != "" {
+		if out, ok := pctx.GetNodeOutput(documentsFrom); ok {
+			if docs, ok := out["results"].([]any); ok {
+				documents = docs
+			} else if docs, ok := out["documents"].([]any); ok {
+				documents = docs
+			}
+		}
+	}
+
+	// Helper: fall back to first topN documents without reranking.
+	fallback := func() map[string]any {
+		if len(documents) <= topN {
+			return map[string]any{"results": documents}
+		}
+		return map[string]any{"results": documents[:topN]}
+	}
+
+	if e.embeddingURL == "" || len(documents) == 0 {
+		slog.Warn("rerank node: skipping rerank (no embedding URL or empty documents)", "nodeId", node.ID)
+		return fallback(), nil
+	}
+
+	payload, _ := json.Marshal(map[string]any{
+		"query":     query,
+		"documents": documents,
+		"topN":      topN,
+	})
+	req, err := newHTTPRequest(ctx, http.MethodPost, e.embeddingURL+"/rerank", payload)
+	if err != nil {
+		slog.Warn("rerank node: failed to build request, falling back", "nodeId", node.ID, "err", err)
+		return fallback(), nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := defaultHTTPClient.Do(req)
+	if err != nil {
+		slog.Warn("rerank node: rerank service unavailable, falling back", "nodeId", node.ID, "err", err)
+		return fallback(), nil
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		slog.Warn("rerank node: rerank service returned non-200, falling back",
+			"nodeId", node.ID, "status", resp.StatusCode)
+		return fallback(), nil
+	}
+
+	var result struct {
+		Results []any `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		slog.Warn("rerank node: decode error, falling back", "nodeId", node.ID, "err", err)
+		return fallback(), nil
+	}
+
+	return map[string]any{"results": result.Results}, nil
 }

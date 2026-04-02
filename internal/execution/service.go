@@ -29,11 +29,12 @@ type Service struct {
 	repo      *Repository
 	scheduler *Scheduler
 	publisher EventPublisher
+	apiClient *APIClient
 }
 
 // NewService creates an execution Service with the given node registry.
 // publisher may be nil — a no-op publisher is used in that case.
-func NewService(pool *pgxpool.Pool, nodeRegistry *NodeRegistry, publisher EventPublisher) *Service {
+func NewService(pool *pgxpool.Pool, nodeRegistry *NodeRegistry, publisher EventPublisher, apiClient *APIClient) *Service {
 	if publisher == nil {
 		publisher = noopPublisher{}
 	}
@@ -41,11 +42,13 @@ func NewService(pool *pgxpool.Pool, nodeRegistry *NodeRegistry, publisher EventP
 		repo:      NewRepository(pool),
 		scheduler: NewScheduler(nodeRegistry),
 		publisher: publisher,
+		apiClient: apiClient,
 	}
 }
 
 // StartExecution creates an execution record and runs the pipeline asynchronously.
-func (s *Service) StartExecution(ctx context.Context, tenantID string, req CreateExecutionRequest) (AgentExecution, error) {
+// bearerToken is forwarded to agenthub-api for fetching the agent pipeline definition.
+func (s *Service) StartExecution(ctx context.Context, tenantID, bearerToken string, req CreateExecutionRequest) (AgentExecution, error) {
 	inputJSON, _ := json.Marshal(req.Input)
 
 	exec := AgentExecution{
@@ -61,13 +64,13 @@ func (s *Service) StartExecution(ctx context.Context, tenantID string, req Creat
 	}
 
 	// Run pipeline in background.
-	go s.runPipeline(context.Background(), tenantID, created.ID, req.AgentID, req.Input)
+	go s.runPipeline(context.Background(), tenantID, bearerToken, created.ID, req.AgentID, req.Input)
 
 	return created, nil
 }
 
 // runPipeline loads the agent pipeline and runs it via the DAG scheduler.
-func (s *Service) runPipeline(ctx context.Context, tenantID string, executionID, agentID uuid.UUID, input map[string]any) {
+func (s *Service) runPipeline(ctx context.Context, tenantID, bearerToken string, executionID, agentID uuid.UUID, input map[string]any) {
 	startedAt := time.Now()
 
 	if err := s.repo.UpdateStatus(ctx, tenantID, executionID, StatusRunning, ""); err != nil {
@@ -82,13 +85,27 @@ func (s *Service) runPipeline(ctx context.Context, tenantID string, executionID,
 		StartedAt:   startedAt,
 	})
 
-	// NOTE: In a full implementation, the pipeline nodes/edges would be loaded from the
-	// agenthub-api database. For now, create a minimal single-node pipeline.
-	nodes := []*Node{
-		{ID: "input", Type: "INPUT", Config: map[string]any{}},
-		{ID: "output", Type: "OUTPUT", Config: map[string]any{"sources": []any{"input"}}},
+	// Fetch pipeline definition from agenthub-api.
+	// Fall back to a trivial INPUT→OUTPUT pipeline if the API is unavailable,
+	// so that chat still works in degraded environments.
+	var nodes []*Node
+	var edges []Edge
+	if s.apiClient != nil {
+		data, err := s.apiClient.FetchPipeline(ctx, bearerToken, agentID.String())
+		if err != nil {
+			slog.Warn("failed to fetch pipeline from api, using fallback pipeline", "agentId", agentID, "err", err)
+		} else {
+			nodes = data.Nodes
+			edges = data.Edges
+		}
 	}
-	edges := []Edge{{Source: "input", Target: "output"}}
+	if len(nodes) == 0 {
+		nodes = []*Node{
+			{ID: "input", Type: "INPUT", Config: map[string]any{}},
+			{ID: "output", Type: "OUTPUT", Config: map[string]any{"sources": []any{"input"}}},
+		}
+		edges = []Edge{{Source: "input", Target: "output"}}
+	}
 	dag := NewDAG(nodes, edges)
 
 	pctx := NewPipelineContext(executionID, tenantID, input)
