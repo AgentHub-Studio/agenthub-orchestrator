@@ -2,6 +2,7 @@ package execution
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -21,13 +22,28 @@ func NewHandler(pool *pgxpool.Pool, nodeRegistry *NodeRegistry, publisher EventP
 }
 
 // Routes returns the chi router for execution endpoints.
+// All execution endpoints are deprecated — use POST /api/chat/sessions/{id}/run on agenthub-api instead.
 func (h *Handler) Routes() http.Handler {
 	r := chi.NewRouter()
+	r.Use(deprecated)
 	r.Post("/", h.start)
 	r.Get("/{id}", h.get)
 	r.Post("/{id}/cancel", h.cancel)
 	r.Get("/agent/{agentId}", h.listByAgent)
 	return r
+}
+
+// deprecated adds Deprecated and Sunset headers to all responses and logs a warning.
+func deprecated(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Deprecated", "true")
+		w.Header().Set("Sunset", "2026-07-01")
+		slog.Warn("deprecated execution endpoint called",
+			"method", r.Method,
+			"path", r.URL.Path,
+		)
+		next.ServeHTTP(w, r)
+	})
 }
 
 func tenantFromRequest(r *http.Request) string {
