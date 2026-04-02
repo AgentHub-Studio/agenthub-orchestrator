@@ -42,6 +42,8 @@ spec:
               value: http://agenthub-skill-runtime.agenthub.svc.cluster.local:8083
             - name: EMBEDDING_URL
               value: http://agenthub-embedding.agenthub.svc.cluster.local:8000
+            - name: AGENTHUB_API_URL
+              value: http://agenthub-api.agenthub.svc.cluster.local:8081
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
