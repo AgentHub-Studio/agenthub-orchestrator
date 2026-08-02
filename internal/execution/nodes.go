@@ -240,7 +240,7 @@ func (e *embedExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineC
 	if err != nil {
 		return nil, fmt.Errorf("embed node: call embedding service: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("embed node: embedding service returned %d", resp.StatusCode)
@@ -376,7 +376,7 @@ func (e *sqlExecutor) fetchDatasource(ctx context.Context, pctx *PipelineContext
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}
@@ -463,7 +463,7 @@ func (e *httpExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineCo
 	if err != nil {
 		return nil, fmt.Errorf("http node: request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var body any
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -490,7 +490,7 @@ func (e *httpExecutor) resolveOAuth(ctx context.Context, pctx *PipelineContext, 
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}
@@ -581,7 +581,7 @@ func (e *toolExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineCo
 	if err != nil {
 		return nil, fmt.Errorf("tool node: skill-runtime request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var result map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("tool node: decode response: %w", err)
@@ -850,7 +850,7 @@ func (e *webhookOutExecutor) Execute(ctx context.Context, node *Node, pctx *Pipe
 	if err != nil {
 		return nil, fmt.Errorf("webhook_out node: request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	slog.Info("webhook_out delivered", "nodeId", node.ID, "url", webhookURL, "status", resp.StatusCode)
 	return map[string]any{"status": resp.StatusCode, "delivered": true}, nil
 }
@@ -936,7 +936,7 @@ func (e *retrieveExecutor) Execute(ctx context.Context, node *Node, pctx *Pipeli
 	if err != nil {
 		return nil, fmt.Errorf("retrieve node: call embedding service: %w", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("retrieve node: embedding service returned %d", resp.StatusCode)
@@ -1027,7 +1027,7 @@ func (e *rerankExecutor) Execute(ctx context.Context, node *Node, pctx *Pipeline
 		slog.Warn("rerank node: rerank service unavailable, falling back", "nodeId", node.ID, "err", err)
 		return fallback(), nil
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		slog.Warn("rerank node: rerank service returned non-200, falling back",

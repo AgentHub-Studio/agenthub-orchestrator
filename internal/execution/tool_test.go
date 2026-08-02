@@ -146,7 +146,7 @@ func TestToolExecutor_IntegrationWithNodeRegistry(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	registry := NewNodeRegistry(nil, srv.URL, "")
+	registry := NewNodeRegistry(nil, srv.URL, "", "")
 	exec, err := registry.Get("TOOL")
 	require.NoError(t, err)
 

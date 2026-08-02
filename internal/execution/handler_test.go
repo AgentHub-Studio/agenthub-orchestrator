@@ -11,7 +11,7 @@ import (
 )
 
 func newHandler() http.Handler {
-	h := execution.NewHandler(nil, nil, nil)
+	h := execution.NewHandler(nil, nil, nil, nil)
 	return h.Routes()
 }
 
