@@ -23,6 +23,7 @@ type Config struct {
 	OTLPEndpoint    string
 	CORSOrigins     []string
 	LogLevel        string
+	AgentHubAPIURL  string
 
 	// LLM provider configurations.
 	OpenAI      LLMProviderConfig
@@ -42,6 +43,7 @@ func Load() (*Config, error) {
 		RabbitMQURL:     os.Getenv("RABBITMQ_URL"),
 		OTLPEndpoint:    os.Getenv("OTLP_ENDPOINT"),
 		LogLevel:        getEnv("LOG_LEVEL", "info"),
+		AgentHubAPIURL:  getEnv("AGENTHUB_API_URL", "http://agenthub-api:8081"),
 	}
 
 	if cfg.DatabaseURL == "" {

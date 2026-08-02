@@ -9,6 +9,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	gocommons_tenant "github.com/AgentHub-Studio/agenthub-go-commons/tenant"
 )
 
 // Handler handles HTTP requests for agent executions.
@@ -17,8 +19,9 @@ type Handler struct {
 }
 
 // NewHandler creates an execution Handler with the given node registry and optional event publisher.
-func NewHandler(pool *pgxpool.Pool, nodeRegistry *NodeRegistry, publisher EventPublisher) *Handler {
-	return &Handler{svc: NewService(pool, nodeRegistry, publisher)}
+// apiClient may be nil — pipeline fetching will be skipped and a fallback pipeline will be used.
+func NewHandler(pool *pgxpool.Pool, nodeRegistry *NodeRegistry, publisher EventPublisher, apiClient *APIClient) *Handler {
+	return &Handler{svc: NewService(pool, nodeRegistry, publisher, apiClient)}
 }
 
 // Routes returns the chi router for execution endpoints.
@@ -46,15 +49,6 @@ func deprecated(next http.Handler) http.Handler {
 	})
 }
 
-func tenantFromRequest(r *http.Request) string {
-	// In production, extract from JWT claim. Use header for now.
-	t := r.Header.Get("X-Tenant-ID")
-	if t == "" {
-		return "default"
-	}
-	return t
-}
-
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -71,8 +65,8 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	tenantID := tenantFromRequest(r)
-	exec, err := h.svc.StartExecution(r.Context(), tenantID, req)
+	tenantID := gocommons_tenant.FromContext(r.Context())
+	exec, err := h.svc.StartExecution(r.Context(), tenantID, r.Header.Get("Authorization"), req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -86,7 +80,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid execution id")
 		return
 	}
-	exec, err := h.svc.GetByID(r.Context(), tenantFromRequest(r), id)
+	exec, err := h.svc.GetByID(r.Context(), gocommons_tenant.FromContext(r.Context()), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "execution not found")
 		return
@@ -100,7 +94,7 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid execution id")
 		return
 	}
-	if err := h.svc.CancelExecution(r.Context(), tenantFromRequest(r), id); err != nil {
+	if err := h.svc.CancelExecution(r.Context(), gocommons_tenant.FromContext(r.Context()), id); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -119,7 +113,7 @@ func (h *Handler) listByAgent(w http.ResponseWriter, r *http.Request) {
 		size = 20
 	}
 
-	execs, total, err := h.svc.ListByAgent(r.Context(), tenantFromRequest(r), agentID, page, size)
+	execs, total, err := h.svc.ListByAgent(r.Context(), gocommons_tenant.FromContext(r.Context()), agentID, page, size)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

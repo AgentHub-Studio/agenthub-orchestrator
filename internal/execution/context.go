@@ -17,6 +17,7 @@ type PipelineContext struct {
 	Input       map[string]any
 	mu          sync.RWMutex
 	nodeResults map[string]map[string]any // nodeID -> output
+	metadata    map[string]any            // arbitrary key-value metadata (e.g. bearerToken)
 }
 
 // NewPipelineContext creates a new PipelineContext for the given execution.
@@ -26,7 +27,23 @@ func NewPipelineContext(executionID uuid.UUID, tenantID string, input map[string
 		TenantID:    tenantID,
 		Input:       input,
 		nodeResults: make(map[string]map[string]any),
+		metadata:    make(map[string]any),
 	}
+}
+
+// SetValue stores an arbitrary metadata value under key.
+// Used to carry request-scoped data like the bearer token across nodes.
+func (c *PipelineContext) SetValue(key string, value any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.metadata[key] = value
+}
+
+// GetValue returns a metadata value previously stored with SetValue.
+func (c *PipelineContext) GetValue(key string) any {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.metadata[key]
 }
 
 // SetNodeOutput stores the output for a node.
