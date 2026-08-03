@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-GO_IMAGE="golang:1.24-alpine"
+GO_IMAGE="golang:1.25-alpine"
 MODULE_CACHE_VOLUME="${AGENTHUB_GO_CACHE_VOLUME:-agenthub-orchestrator-go-cache}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMONS_DIR="${AGENTHUB_GO_COMMONS_DIR:-$(dirname "${SCRIPT_DIR}")/agenthub-go-commons}"
