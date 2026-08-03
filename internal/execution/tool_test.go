@@ -109,6 +109,22 @@ func TestToolExecutor_Execute_MissingURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "skill-runtime URL not configured")
 }
 
+func TestToolExecutor_Execute_RejectsUnsafeSkillRuntimeURL(t *testing.T) {
+	exec := &toolExecutor{skillRuntimeURL: "file:///tmp/runtime"}
+	node := &Node{
+		ID:   "tool-unsafe",
+		Type: "TOOL",
+		Config: map[string]any{
+			"skillSlug": "some-skill",
+		},
+	}
+	pctx := NewPipelineContext(uuid.New(), "test-tenant", map[string]any{})
+
+	_, err := exec.Execute(context.Background(), node, pctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid skill-runtime URL")
+}
+
 // TestToolExecutor_Execute_SkillRuntimeError verifies that a non-200 response
 // from skill-runtime still decodes the body (error details forwarded to caller).
 func TestToolExecutor_Execute_SkillRuntimeError(t *testing.T) {

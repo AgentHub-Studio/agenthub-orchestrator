@@ -154,7 +154,9 @@ func (p *Provider) Chat(ctx context.Context, messages []ai.Message, opts ai.Chat
 		}
 
 		apiErr := p.parseError(resp)
-		resp.Body.Close()
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			apiErr = errors.Join(apiErr, fmt.Errorf("openai: close error response body: %w", closeErr))
+		}
 
 		if attempt < maxRetries {
 			var ae *ai.APIError
@@ -202,8 +204,11 @@ func (p *Provider) ChatStream(ctx context.Context, messages []ai.Message, opts a
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		return nil, p.parseError(resp)
+		apiErr := p.parseError(resp)
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			apiErr = errors.Join(apiErr, fmt.Errorf("openai: close stream error response body: %w", closeErr))
+		}
+		return nil, apiErr
 	}
 
 	ch := make(chan ai.StreamChunk, 32)

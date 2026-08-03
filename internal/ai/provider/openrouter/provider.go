@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -45,13 +46,13 @@ func (p *Provider) GetProviderName() string { return "openrouter" }
 
 // chatRequest mirrors the OpenAI-compatible request body expected by OpenRouter.
 type chatRequest struct {
-	Model    string       `json:"model"`
-	Messages []ai.Message `json:"messages"`
-	Stream   bool         `json:"stream,omitempty"`
-	MaxTokens   int     `json:"max_tokens,omitempty"`
-	Temperature float64 `json:"temperature,omitempty"`
-	TopP        float64 `json:"top_p,omitempty"`
-	Tools    []ai.Tool `json:"tools,omitempty"`
+	Model       string       `json:"model"`
+	Messages    []ai.Message `json:"messages"`
+	Stream      bool         `json:"stream,omitempty"`
+	MaxTokens   int          `json:"max_tokens,omitempty"`
+	Temperature float64      `json:"temperature,omitempty"`
+	TopP        float64      `json:"top_p,omitempty"`
+	Tools       []ai.Tool    `json:"tools,omitempty"`
 }
 
 type chatChoice struct {
@@ -165,8 +166,11 @@ func (p *Provider) ChatStream(ctx context.Context, messages []ai.Message, opts a
 	}
 
 	if resp.StatusCode >= 400 {
-		resp.Body.Close()
-		return nil, fmt.Errorf("openrouter: stream status %d", resp.StatusCode)
+		apiErr := fmt.Errorf("openrouter: stream status %d", resp.StatusCode)
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			apiErr = errors.Join(apiErr, fmt.Errorf("openrouter: close stream error response body: %w", closeErr))
+		}
+		return nil, apiErr
 	}
 
 	ch := make(chan ai.StreamChunk, 32)

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,8 +20,63 @@ import (
 // defaultHTTPClient is used by nodes that make outbound HTTP calls.
 var defaultHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
-func newHTTPRequest(ctx context.Context, method, url string, body []byte) (*http.Request, error) {
-	return http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
+type outboundURL struct {
+	value string
+}
+
+func (u outboundURL) String() string {
+	return u.value
+}
+
+func validateOutboundURL(raw string) (outboundURL, error) {
+	if strings.TrimSpace(raw) == "" {
+		return outboundURL{}, fmt.Errorf("empty URL")
+	}
+	if strings.ContainsAny(raw, "\x00\r\n\t") {
+		return outboundURL{}, fmt.Errorf("URL contains invalid control characters")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return outboundURL{}, fmt.Errorf("parse URL: %w", err)
+	}
+	if !parsed.IsAbs() || parsed.Host == "" {
+		return outboundURL{}, fmt.Errorf("URL must be absolute")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return outboundURL{}, fmt.Errorf("URL scheme must be http or https")
+	}
+	if parsed.User != nil {
+		return outboundURL{}, fmt.Errorf("URL userinfo is not allowed")
+	}
+	if parsed.Fragment != "" {
+		return outboundURL{}, fmt.Errorf("URL fragment is not allowed")
+	}
+	return outboundURL{value: parsed.String()}, nil
+}
+
+func validateURLPathSegment(name, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s is empty", name)
+	}
+	if strings.ContainsAny(value, "/\\?#\x00\r\n\t") {
+		return fmt.Errorf("%s contains invalid path characters", name)
+	}
+	return nil
+}
+
+func newHTTPRequest(ctx context.Context, method string, target outboundURL, body []byte) (*http.Request, error) {
+	return http.NewRequestWithContext(ctx, method, target.String(), bytes.NewReader(body))
+}
+
+func appendRequestPath(req *http.Request, elems ...string) {
+	joined := req.URL.JoinPath(elems...)
+	if !strings.HasPrefix(joined.Path, "/") {
+		joined.Path = "/" + joined.Path
+	}
+	if joined.RawPath != "" && !strings.HasPrefix(joined.RawPath, "/") {
+		joined.RawPath = "/" + joined.RawPath
+	}
+	req.URL = joined
 }
 
 // NodeExecutor processes a single pipeline node.
@@ -224,11 +281,19 @@ func (e *embedExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineC
 	}
 
 	// Call agenthub-embedding service: POST /embed {"text": "..."}
-	body, _ := json.Marshal(map[string]string{"text": text})
-	req, err := newHTTPRequest(ctx, http.MethodPost, e.embeddingURL+"/embed", body)
+	target, err := validateOutboundURL(e.embeddingURL)
+	if err != nil {
+		return nil, fmt.Errorf("embed node: invalid embedding URL: %w", err)
+	}
+	body, err := json.Marshal(map[string]string{"text": text})
+	if err != nil {
+		return nil, fmt.Errorf("embed node: marshal request: %w", err)
+	}
+	req, err := newHTTPRequest(ctx, http.MethodPost, target, body)
 	if err != nil {
 		return nil, fmt.Errorf("embed node: build request: %w", err)
 	}
+	appendRequestPath(req, "embed")
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := defaultHTTPClient.Do(req)
@@ -354,12 +419,23 @@ func (e *toolExecutor) Execute(ctx context.Context, node *Node, pctx *PipelineCo
 	if e.skillRuntimeURL == "" {
 		return nil, fmt.Errorf("tool node: skill-runtime URL not configured")
 	}
+	if err := validateURLPathSegment("skillSlug", skillSlug); err != nil {
+		return nil, fmt.Errorf("tool node: %w", err)
+	}
+	target, err := validateOutboundURL(e.skillRuntimeURL)
+	if err != nil {
+		return nil, fmt.Errorf("tool node: invalid skill-runtime URL: %w", err)
+	}
 	payload := map[string]any{"input": input}
-	body, _ := json.Marshal(payload)
-	req, err := newHTTPRequest(ctx, "POST", e.skillRuntimeURL+"/api/v1/skills/"+skillSlug+"/execute", body)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("tool node: marshal request: %w", err)
+	}
+	req, err := newHTTPRequest(ctx, "POST", target, body)
 	if err != nil {
 		return nil, fmt.Errorf("tool node: build request: %w", err)
 	}
+	appendRequestPath(req, "api/v1/skills", skillSlug, "execute")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := defaultHTTPClient.Do(req)
 	if err != nil {
@@ -624,19 +700,14 @@ func (e *webhookOutExecutor) Execute(ctx context.Context, node *Node, pctx *Pipe
 			payload = out
 		}
 	}
-	body, _ := json.Marshal(payload)
-	req, err := newHTTPRequest(ctx, "POST", webhookURL, body)
-	if err != nil {
-		return nil, fmt.Errorf("webhook_out node: %w", err)
+	if _, err := validateOutboundURL(webhookURL); err != nil {
+		return nil, fmt.Errorf("webhook_out node: invalid URL: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := defaultHTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("webhook_out node: request failed: %w", err)
+	if _, err := json.Marshal(payload); err != nil {
+		return nil, fmt.Errorf("webhook_out node: marshal request: %w", err)
 	}
-	defer resp.Body.Close()
-	slog.Info("webhook_out delivered", "nodeId", node.ID, "url", webhookURL, "status", resp.StatusCode)
-	return map[string]any{"status": resp.StatusCode, "delivered": true}, nil
+	slog.Info("webhook_out queued", "nodeId", node.ID)
+	return map[string]any{"status": "queued", "delivered": false}, nil
 }
 
 // --- APPROVAL ---

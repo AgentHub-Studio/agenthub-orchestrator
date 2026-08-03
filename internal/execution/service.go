@@ -60,8 +60,9 @@ func (s *Service) StartExecution(ctx context.Context, tenantID string, req Creat
 		return AgentExecution{}, fmt.Errorf("service: create execution: %w", err)
 	}
 
-	// Run pipeline in background.
-	go s.runPipeline(context.Background(), tenantID, created.ID, req.AgentID, req.Input)
+	// Keep request values for logs/tracing while allowing the background run to outlive the HTTP request.
+	pipelineCtx := context.WithoutCancel(ctx)
+	go s.runPipeline(pipelineCtx, tenantID, created.ID, req.AgentID, req.Input)
 
 	return created, nil
 }

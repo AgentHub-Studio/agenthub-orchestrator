@@ -58,7 +58,9 @@ func tenantFromRequest(r *http.Request) string {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v) //nolint:errcheck
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("failed to write JSON response", "err", err)
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
