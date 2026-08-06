@@ -131,6 +131,7 @@ func TestOpenAIProvider_ChatStream_APIError(t *testing.T) {
 	_, err := p.ChatStream(context.Background(), []ai.Message{{Role: ai.RoleUser, Content: "Hi"}},
 		ai.ChatOptions{Model: "gpt-4o"})
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "server error")
 }
 
 func TestOpenAIProvider_Chat_RateLimited_ReturnsTypedError(t *testing.T) {

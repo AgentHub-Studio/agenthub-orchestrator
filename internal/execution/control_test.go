@@ -2,9 +2,6 @@ package execution
 
 import (
 	"context"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/google/uuid"
@@ -330,35 +327,31 @@ func TestWebhookOutExecutor_MissingURL_ReturnsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "missing required config 'url'")
 }
 
-func TestWebhookOutExecutor_CallsURL(t *testing.T) {
-	// Start a local HTTP server to receive the webhook.
-	received := make(chan []byte, 1)
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		received <- body
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
+func TestWebhookOutExecutor_RejectsUnsafeURL(t *testing.T) {
+	exec := &webhookOutExecutor{}
+	pctx := NewPipelineContext(uuid.Nil, "tenant", map[string]any{})
 
+	node := &Node{ID: "wo-unsafe", Type: "WEBHOOK_OUT", Config: map[string]any{
+		"url": "ftp://example.com/hook",
+	}}
+	_, err := exec.Execute(context.Background(), node, pctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid URL")
+}
+
+func TestWebhookOutExecutor_QueuesValidatedURL(t *testing.T) {
 	exec := &webhookOutExecutor{}
 	pctx := NewPipelineContext(uuid.Nil, "tenant", map[string]any{})
 	pctx.SetNodeOutput("prev", map[string]any{"data": "hello"})
 
 	node := &Node{ID: "wo2", Type: "WEBHOOK_OUT", Config: map[string]any{
-		"url":         ts.URL,
+		"url":         "https://hooks.example.com/agenthub",
 		"inputNodeId": "prev",
 	}}
 	out, err := exec.Execute(context.Background(), node, pctx)
 	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, out["status"])
-	assert.Equal(t, true, out["delivered"])
-
-	select {
-	case body := <-received:
-		assert.Contains(t, string(body), "hello")
-	default:
-		t.Fatal("webhook was not received")
-	}
+	assert.Equal(t, "queued", out["status"])
+	assert.Equal(t, false, out["delivered"])
 }
 
 // --- APPROVAL executor tests ---

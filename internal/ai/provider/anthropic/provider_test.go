@@ -99,6 +99,7 @@ func TestAnthropicProvider_ChatStream_APIError(t *testing.T) {
 	_, err := p.ChatStream(context.Background(), []ai.Message{{Role: ai.RoleUser, Content: "Hi"}},
 		ai.ChatOptions{Model: "claude-3-5-sonnet-20241022", MaxTokens: 256})
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "server error")
 }
 
 func TestAnthropicProvider_Chat_RateLimited_ReturnsTypedError(t *testing.T) {
